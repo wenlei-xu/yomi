@@ -36,6 +36,16 @@ export async function removeCredential(providerId: string): Promise<void> {
   else browserSecrets.delete(providerId)
 }
 
+export async function copyCredential(sourceId: string, providerId: string, origin: string): Promise<void> {
+  if (Capacitor.isNativePlatform()) {
+    await SecureVault.copyCredential({ sourceId, providerId, origin })
+  } else {
+    const secret = browserSecrets.get(sourceId)
+    if (!secret) throw new Error('API Key 已失效，请重新输入')
+    browserSecrets.set(providerId, secret)
+  }
+}
+
 export async function credentialStatus(providerId: string): Promise<boolean> {
   if (Capacitor.isNativePlatform()) return (await SecureVault.status({ providerId })).stored
   return browserSecrets.has(providerId)
@@ -53,7 +63,8 @@ export async function secureRequest(
   body: string,
   signal: AbortSignal,
   binary: boolean,
-  onChunk?: (chunk: string) => void
+  onChunk?: (chunk: string) => void,
+  method?: 'GET' | 'POST'
 ): Promise<{ status: number; body: string; contentType?: string }>;
 export async function secureRequest(
   providerId: string,
@@ -61,7 +72,8 @@ export async function secureRequest(
   body: string,
   signal: AbortSignal,
   binary = false,
-  onChunk?: (chunk: string) => void
+  onChunk?: (chunk: string) => void,
+  method: 'GET' | 'POST' = 'POST'
 ): Promise<{ status: number; body: string; contentType?: string }> {
   if (signal.aborted) throw new Error('cancelled')
   if (Capacitor.isNativePlatform()) {
@@ -73,7 +85,7 @@ export async function secureRequest(
     signal.addEventListener('abort', abort, { once: true })
     try {
       if (signal.aborted) throw new Error('cancelled')
-      return await SecureVault.request({ requestId, providerId, url, body, binary, stream: Boolean(onChunk) })
+      return await SecureVault.request({ requestId, providerId, url, body, method, binary, stream: Boolean(onChunk) })
     } finally {
       signal.removeEventListener('abort', abort)
       await listener?.remove()
@@ -82,10 +94,11 @@ export async function secureRequest(
   const secret = browserSecrets.get(providerId)
   if (!secret) throw new Error('模型凭证缺失，请重新配置 API Key。')
   const response = await fetch(url, {
-    method: 'POST',
+    method,
     signal,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
-    body
+    body: method === 'POST' ? body : undefined,
+    ...(method === 'GET' ? { redirect: 'error' as const } : {})
   })
   if (binary && response.ok) {
     const mime = response.headers.get('content-type') ?? ''
@@ -114,5 +127,11 @@ export async function secureRequest(
     } catch (error) { await reader.cancel(); throw error }
     finally { reader.releaseLock() }
   }
-  return { status: response.status, body: await response.text(), contentType }
+  const text = await response.text()
+  if (text.length > 8 * 1024 * 1024) throw new Error('服务响应超过 8 MB')
+  return { status: response.status, body: text, contentType }
+}
+
+export function secureGet(providerId: string, url: string, signal: AbortSignal) {
+  return secureRequest(providerId, url, '', signal, false, undefined, 'GET')
 }

@@ -1,4 +1,5 @@
 import { Capacitor } from '@capacitor/core'
+import { App as CapacitorApp } from '@capacitor/app'
 import { Proactive, backgroundSupported } from '../platform/proactive'
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem'
 import { AgentRuntime } from '../agent/runtime'
@@ -11,19 +12,27 @@ import { CommandGate } from './maintenance'
 import { resolveBinding } from '../agent/policy'
 import { parseCharacterCard, parseWorldBook } from '../data/characterCard'
 import { generateImage, generateSpeech, MediaProtocolError } from '../media/generate'
+import { StickerRecognizer } from '../media/stickerRecognizer'
+import { prepareStickerImages } from '../media/stickerImages'
 import type {
   Actor,
+  AgentSettingsUpdate,
+  AgentStatus,
   Conversation,
   Lorebook,
   LorebookEntry,
   MediaAsset,
   MediaSettings,
   Sticker,
+  StickerRecognitionSettings,
   Memory,
   Message,
   ModelBinding,
   ModelCallRecord,
   Provider,
+  ProviderChannelKind,
+  ProviderModel,
+  ModelTestResult,
   ConversationNote,
   ProactiveRule,
   RuntimeIssue,
@@ -33,9 +42,12 @@ import type {
   UsageSummary,
   StorageStats
 } from '../domain/types'
-import { callModel, emptyRequest } from '../model/protocol'
+import { fetchProviderModels, testProviderConnection as probeProviderConnection } from '../model/catalog'
+import { normalizeProviderAddress } from '../model/providerConfig'
+import { testTextConnection, testMediaConnection } from '../model/connectionTest'
 import {
   credentialStatus,
+  copyCredential,
   modelOrigin,
   removeCredential,
   storeCredential,
@@ -70,13 +82,21 @@ export interface AppApi {
   editMessage(messageId: string, body: string): Promise<void>
   recallMessage(messageId: string): Promise<void>
   regenerateMessage(messageId: string): Promise<string>
-  saveUserProfile(name: string, bio: string): Promise<void>
-  saveProvider(provider: Provider, secret?: string): Promise<Provider>
+  saveUserProfile(name: string, bio: string, avatarData?: string): Promise<void>
+  saveProvider(provider: Provider, secret?: string, credentialSourceId?: string): Promise<Provider>
   deleteProvider(providerId: string): Promise<void>
   saveBinding(binding: ModelBinding): Promise<void>
   clearAgentBinding(agentId: string, purpose: ModelBinding['purpose']): Promise<void>
-  testProvider(providerId: string, modelId: string): Promise<string>
-  saveAgent(agent: Partial<Actor> & { name: string }): Promise<Actor>
+  listProviderModels(providerId: string, signal?: AbortSignal): Promise<ProviderModel[]>
+  testProviderConnection(providerId: string, signal?: AbortSignal): Promise<string>
+  providerModelSelections(): Promise<Record<string, string[]>>
+  saveProviderModelSelection(providerId: string, modelIds: string[]): Promise<void>
+  providerChannelKinds(): Promise<Record<string, ProviderChannelKind>>
+  saveProviderChannelKind(providerId: string, kind: ProviderChannelKind): Promise<void>
+  testProvider(providerId: string, modelId: string, signal?: AbortSignal): Promise<string>
+  testMediaProvider(providerId: string, modelId: string, kind: 'image' | 'speech', voice?: string, signal?: AbortSignal): Promise<ModelTestResult>
+  saveAgent(agent: Partial<Actor> & { name: string }, settings?: AgentSettingsUpdate): Promise<Actor>
+  setAgentStatus(agentId: string, status: AgentStatus): Promise<Actor>
   copyAgent(agentId: string): Promise<Actor>
   deleteAgent(agentId: string): Promise<void>
   openDirect(agentId: string): Promise<Conversation>
@@ -85,6 +105,7 @@ export interface AppApi {
   updateConversation(conversationId: string, patch: {
     title?: string
     topic?: string
+    announcement?: string
     pinned?: boolean
     muted?: boolean
     hidden?: boolean
@@ -140,6 +161,9 @@ export interface AppApi {
   stickers(): Promise<Sticker[]>
   saveSticker(name: string, dataUrl: string): Promise<Sticker>
   deleteSticker(stickerId: string): Promise<void>
+  stickerRecognitionSettings(): Promise<StickerRecognitionSettings>
+  saveStickerRecognitionSettings(settings: Pick<StickerRecognitionSettings, 'enabled' | 'providerId' | 'modelId'>, consentGranted?: boolean): Promise<StickerRecognitionSettings>
+  retryStickerRecognition(stickerId: string): Promise<void>
   importCharacterCard(fileName: string, content: string, png?: string): Promise<{ actor: Actor; unsupported: string[] }>
   importWorldBook(content: string): Promise<Lorebook>
   exportWorldBook(bookId: string): Promise<string>
@@ -260,6 +284,13 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
     }
   }
   await syncCredentialStates()
+  const stickerRecognizer = new StickerRecognizer(repository, prepareStickerImages, onChange)
+  if (typeof document !== 'undefined') {
+    stickerRecognizer.setForeground(!document.hidden)
+    document.addEventListener('visibilitychange', () => stickerRecognizer.setForeground(!document.hidden))
+  }
+  void CapacitorApp.addListener('appStateChange', ({ isActive }) => stickerRecognizer.setForeground(isActive))
+  await stickerRecognizer.start()
 
   const saveTextFile = async (fileName: string, content: string, mime: string): Promise<string> => {
     if (Capacitor.isNativePlatform()) {
@@ -295,18 +326,21 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
     return fileName
   }
 
-  const mediaControllers = new Map<string, { controller: AbortController; conversationId?: string }>()
+  const mediaControllers = new Map<string, { controller: AbortController; conversationId?: string; agentId: string }>()
   const cancelMedia = (conversationId?: string) => {
     for (const entry of mediaControllers.values()) {
       if (!conversationId || entry.conversationId === conversationId) entry.controller.abort()
     }
+  }
+  const cancelAgentMedia = (agentId: string) => {
+    for (const entry of mediaControllers.values()) if (entry.agentId === agentId) entry.controller.abort()
   }
   const generateMedia = async (agentId: string, kind: 'image'|'audio', value: string,
     voice?: string, conversationId?: string, messageId?: string): Promise<MediaAsset> => {
     const normalized=value.trim()
     if (!normalized || normalized.length > (kind === 'image' ? 4000 : 4096)) throw new Error('生成内容为空或过长')
     const controller=new AbortController(), assetId=crypto.randomUUID()
-    mediaControllers.set(assetId,{controller,conversationId})
+    mediaControllers.set(assetId,{controller,conversationId,agentId})
     const timeout=setTimeout(() => controller.abort(),120000)
     try {
     const agent = await repository.getActor(agentId)
@@ -315,7 +349,7 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
     const providerId=kind === 'image' ? settings.imageProviderId : settings.speechProviderId
     const modelId=kind === 'image' ? settings.imageModel : settings.speechModel
     const provider=(await repository.listProviders()).find(p => p.id===providerId && p.enabled)
-    if (!provider || !modelId.trim()) throw new Error('请先在“我 → 多媒体设置”选择连接并填写模型')
+    if (!provider || !modelId.trim()) throw new Error('请先在“我 → 提供商”添加图片或语音提供商，再到“我 → 默认模型”选择模型')
     if (provider.credentialState !== 'stored') throw new Error('请先为多媒体连接保存 API Key')
     if (messageId) {
       const message=await repository.messageById(messageId)
@@ -342,6 +376,13 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
   }
 
   const commandGate = new CommandGate()
+  const stickerMaintenance = <T>(work: () => Promise<T>) => stickerRecognizer.withPaused(() => runtime.withMaintenance(work))
+  const configuredProvider = async (providerId: string): Promise<Provider> => {
+    const provider = (await repository.listProviders()).find(item => item.id === providerId && item.enabled)
+    if (!provider) throw new Error('连接不存在或已停用')
+    if (!await credentialStatus(provider.id)) throw new Error('请先为此连接保存 API Key')
+    return provider
+  }
   const api: AppApi = {
     runtime,
     backgroundSupported,
@@ -420,18 +461,21 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
       onChange()
       return id
     },
-    saveUserProfile: async (name, bio) => {
-      await repository.saveUserProfile(name, bio)
+    saveUserProfile: async (name, bio, avatarData) => {
+      await repository.saveUserProfile(name, bio, avatarData)
       onChange()
     },
-    saveProvider: async (provider, secret) => {
+    saveProvider: async (provider, secret, credentialSourceId) => {
+      provider = { ...provider, ...normalizeProviderAddress(provider.baseUrl, provider.protocol) }
       const origin = modelOrigin(provider.baseUrl)
       const previous = (await repository.listProviders()).find(item => item.id === provider.id)
       const originChanged = Boolean(previous && modelOrigin(previous.baseUrl) !== origin)
-      if (originChanged) {
+      if (originChanged && !credentialSourceId) {
         await removeCredential(provider.id)
       }
-      if (secret?.trim()) {
+      if (credentialSourceId) {
+        await copyCredential(credentialSourceId, provider.id, origin)
+      } else if (secret?.trim()) {
         await storeCredential(provider.id,
           secret.trim() === '__prompt__' ? '' : secret.trim(), origin)
       }
@@ -453,37 +497,34 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
       await repository.clearAgentBinding(agentId, purpose)
       onChange()
     },
-    testProvider: async (providerId, modelId) => {
-      const provider = (await repository.listProviders()).find(item => item.id === providerId)
-      if (!provider) throw new Error('连接不存在')
-      if (!(await credentialStatus(provider.id))) throw new Error('凭证缺失，请先填写 API Key')
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 30_000)
-      try {
-        const nonce = crypto.randomUUID()
-        const request = {
-          ...emptyRequest('连接能力测试：先调用 yomi_connection_probe，将用户给出的 marker 原样作为参数。收到工具结果后，只回复结果中的 marker。', nonce, 128),
-          tools: [{ name: 'yomi_connection_probe', description: '验证工具调用和结果续传，不产生任何聊天副作用。',
-            parameters: { type: 'object', properties: { marker: { type: 'string' } },
-              required: ['marker'], additionalProperties: false } }]
-        }
-        const result = await callModel(provider, modelId, request, controller.signal)
-        if (result.toolCalls.length !== 1 || result.toolCalls[0].name !== 'yomi_connection_probe' ||
-          result.toolCalls[0].arguments.marker !== nonce) throw new Error('模型未通过工具调用测试，无法用于 Agent 聊天')
-        const call = result.toolCalls[0]
-        const continuation = await callModel(provider, modelId, { ...request, input: [...request.input,
-          { role: 'assistant', toolCalls: result.toolCalls },
-          { role: 'tool', toolCallId: call.id, name: call.name, content: JSON.stringify({ marker: nonce }) }] }, controller.signal)
-        if (continuation.toolCalls.length || continuation.text.trim() !== nonce) {
-          throw new Error('模型未通过工具结果续传测试，请检查协议和模型兼容性')
-        }
-        return '认证、工具调用和结果续传均通过'
-      } finally {
-        clearTimeout(timeout)
-      }
+    listProviderModels: async (providerId, signal) => fetchProviderModels(await configuredProvider(providerId), signal),
+    testProviderConnection: async (providerId, signal) => probeProviderConnection(await configuredProvider(providerId), signal),
+    providerModelSelections: () => repository.providerModelSelections(),
+    saveProviderModelSelection: async (providerId, modelIds) => {
+      await repository.saveProviderModelSelection(providerId, modelIds)
+      onChange()
     },
-    saveAgent: async agent => {
-      const saved = await repository.saveAgent(agent)
+    providerChannelKinds: () => repository.providerChannelKinds(),
+    saveProviderChannelKind: async (providerId, kind) => {
+      await repository.saveProviderChannelKind(providerId, kind)
+      onChange()
+    },
+    testProvider: async (providerId, modelId, signal) => testTextConnection(await configuredProvider(providerId), modelId.trim(), signal),
+    testMediaProvider: async (providerId, modelId, kind, voice, signal) => testMediaConnection(await configuredProvider(providerId), modelId.trim(), kind, voice, signal),
+    saveAgent: async (agent, settings) => {
+      const current = agent.id ? await repository.getActor(agent.id) : null
+      const affectsRuntime = current && ((['name', 'bio', 'persona', 'speakingStyle', 'enabled', 'archived', 'allowPrivate', 'allowGroup'] as const)
+        .some(key => agent[key] !== undefined && agent[key] !== current[key])
+        || settings?.privateMemo !== undefined || settings?.modelBindings !== undefined)
+      const save = () => repository.saveAgentDetails(agent, settings)
+      const saved = affectsRuntime ? await runtime.mutateAgent(current.id, save) : await save()
+      if (current && saved.profileVersion !== current.profileVersion) cancelAgentMedia(saved.id)
+      onChange()
+      return saved
+    },
+    setAgentStatus: async (agentId, status) => {
+      const saved = await runtime.mutateAgent(agentId, () => repository.setAgentStatus(agentId, status))
+      if (status !== 'active') cancelAgentMedia(agentId)
       onChange()
       return saved
     },
@@ -493,8 +534,8 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
       return copied
     },
     deleteAgent: async agentId => {
-      await repository.deleteAgent(agentId)
-      runtime.cancelRetryWait(undefined, agentId)
+      await runtime.mutateAgent(agentId, () => repository.deleteAgent(agentId))
+      cancelAgentMedia(agentId)
       onChange()
     },
     openDirect: async agentId => {
@@ -508,21 +549,31 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
       return conversation
     },
     updateMembers: async (conversationId, addIds, removeIds) => {
-      await repository.updateMembers(conversationId, addIds, removeIds)
+      const current = await repository.getConversation(conversationId)
+      const changed = current && (addIds.some(id => !current.members.includes(id)) || removeIds.some(id => id !== localUserId && current.members.includes(id)))
+      if (changed) await runtime.mutateConversation(conversationId, () => repository.updateMembers(conversationId, addIds, removeIds))
+      else await repository.updateMembers(conversationId, addIds, removeIds)
       onChange()
     },
     updateConversation: async (conversationId, patch) => {
-      await repository.updateConversation(conversationId, patch)
+      const current = await repository.getConversation(conversationId)
+      const changed = current && ((patch.title !== undefined && patch.title.trim() !== current.title)
+        || (patch.topic !== undefined && patch.topic.trim() !== current.topic)
+        || (patch.announcement !== undefined && patch.announcement.trim() !== (current.announcement ?? '')))
+      if (changed) await runtime.mutateConversation(conversationId, () => repository.updateConversation(conversationId, patch))
+      else await repository.updateConversation(conversationId, patch)
       if (patch.autonomyPaused === false) runtime.wakeConversation(conversationId)
       onChange()
     },
     clearConversation: async conversationId => {
-      await repository.clearConversation(conversationId)
+      cancelMedia(conversationId)
+      await runtime.mutateConversation(conversationId, () => repository.clearConversation(conversationId))
       runtime.cancelRetryWait(conversationId)
       onChange()
     },
     deleteConversation: async conversationId => {
-      await repository.deleteConversation(conversationId)
+      cancelMedia(conversationId)
+      await runtime.mutateConversation(conversationId, () => repository.deleteConversation(conversationId))
       runtime.cancelRetryWait(conversationId)
       onChange()
     },
@@ -624,12 +675,20 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
     saveSticker: async (name, dataUrl) => {
       const saved = await repository.saveSticker(name, dataUrl)
       onChange()
+      stickerRecognizer.kick()
       return saved
     },
     deleteSticker: async stickerId => {
       await repository.deleteSticker(stickerId)
       onChange()
     },
+    stickerRecognitionSettings: () => repository.stickerRecognitionSettings(),
+    saveStickerRecognitionSettings: async (settings, consentGranted = false) => {
+      const saved = await repository.saveStickerRecognitionSettings(settings, consentGranted)
+      onChange()
+      return saved
+    },
+    retryStickerRecognition: stickerId => stickerRecognizer.retry(stickerId),
     importCharacterCard: async (_fileName, content, png) => {
       const card=parseCharacterCard(content,png)
       const actor=await repository.importCharacter(card)
@@ -679,7 +738,7 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
       const archive = await readBackupZip(bytes, password)
       if (modules.some(id => !archive.preview.modules.includes(id))) throw new Error('所选模块不在此备份中')
       cancelMedia()
-      await commandGate.exclusive(() => runtime.withMaintenance(async () => {
+      await commandGate.exclusive(() => stickerMaintenance(async () => {
         const before = await repository.listProviders()
         await store.restore(archive.snapshot, modules, overwrite)
         const after = await repository.listProviders()
@@ -706,7 +765,7 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
       if (typeof raw !== 'string') throw new Error('无法读取备份文件')
       const parsed = await decryptBackup(raw, password)
       cancelMedia()
-      await commandGate.exclusive(() => runtime.withMaintenance(async () => {
+      await commandGate.exclusive(() => stickerMaintenance(async () => {
         const oldProviders = await repository.listProviders()
         await store.restore(parsed)
         for (const providerId of new Set([...oldProviders, ...await repository.listProviders()].map(item => item.id))) {
@@ -716,7 +775,7 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
       }))
     },
     dataRecovery: () => store.info(),
-    rollbackData: () => { cancelMedia(); return commandGate.exclusive(() => runtime.withMaintenance(async () => {
+    rollbackData: () => { cancelMedia(); return commandGate.exclusive(() => stickerMaintenance(async () => {
       await store.rollback()
       await repository.interruptStaleRuns()
       await syncCredentialStates()
@@ -811,7 +870,7 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
       if (backgroundSupported()) await Proactive.stop()
       runtime.setBackgroundEnabled(false)
       cancelMedia()
-      await commandGate.exclusive(() => runtime.withMaintenance(async () => {
+      await commandGate.exclusive(() => stickerMaintenance(async () => {
         const providers = await repository.listProviders()
         await store.discardPrevious()
         await repository.clearAll()
@@ -826,20 +885,22 @@ async function initializeApp(onChange: () => void): Promise<AppApi> {
     }
   }
   const commands = new Set<PropertyKey>(['sendUser', 'saveDraft', 'markRead', 'react', 'deleteMessage', 'editMessage', 'recallMessage', 'regenerateMessage',
-    'saveUserProfile', 'saveProvider', 'deleteProvider', 'saveBinding', 'clearAgentBinding', 'testProvider',
-    'saveAgent', 'copyAgent', 'deleteAgent', 'openDirect', 'createGroup', 'updateMembers', 'updateConversation',
+    'saveUserProfile', 'saveProvider', 'deleteProvider', 'saveProviderModelSelection', 'saveProviderChannelKind', 'saveBinding', 'clearAgentBinding', 'testProvider', 'testMediaProvider',
+    'saveAgent', 'setAgentStatus', 'copyAgent', 'deleteAgent', 'openDirect', 'createGroup', 'updateMembers', 'updateConversation',
     'clearConversation', 'deleteConversation', 'saveMemory', 'deleteMemory', 'moveMemoryScope',
     'saveConversationNote', 'deleteConversationNote', 'saveProactiveRule', 'deleteProactiveRule', 'setConversationMemorySources',
     'saveLorebook','deleteLorebook','saveLorebookEntry','deleteLorebookEntry','setConversationLorebooks','setActorLorebooks',
     'generateAgentImage','generateAgentVoice','saveMediaSettings','deleteMediaAsset','sendMedia','sendSticker',
-    'saveSticker','deleteSticker','importCharacterCard','exportOriginalCard','importWorldBook','exportWorldBook','startGreeting',
+    'saveSticker','deleteSticker','saveStickerRecognitionSettings','retryStickerRecognition','importCharacterCard','exportOriginalCard','importWorldBook','exportWorldBook','startGreeting',
     'generateAgentImage', 'generateAgentVoice', 'saveLorebook', 'deleteLorebook', 'saveLorebookEntry',
     'deleteLorebookEntry', 'setConversationLorebooks', 'saveSticker', 'deleteSticker', 'deleteMediaAsset',
     'saveMediaSettings', 'sendSticker', 'sendImage', 'importWorldBook', 'importCharacterCard', 'startGreeting',
     'exportBackupZip', 'previewBackupZip', 'exportBackup', 'exportConversation', 'exportAgent', 'importAgent', 'refresh', 'clearFinishedLogs', 'exportDiagnostics'])
+  const recognitionChanges = new Set<PropertyKey>(['saveStickerRecognitionSettings', 'saveProvider', 'deleteProvider', 'saveProviderChannelKind', 'deleteSticker'])
   return new Proxy(api, { get(target, property, receiver) {
     const value = Reflect.get(target, property, receiver)
     if (!commands.has(property) || typeof value !== 'function') return value
-    return (...args: unknown[]) => commandGate.run(async () => Reflect.apply(value, target, args))
+    return (...args: unknown[]) => commandGate.run(async () => recognitionChanges.has(property)
+      ? stickerRecognizer.withPaused(async () => Reflect.apply(value, target, args)) : Reflect.apply(value, target, args))
   } })
 }

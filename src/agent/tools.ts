@@ -27,21 +27,20 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'message_send',
-    description: '以当前角色发送一条正式聊天消息。可发到当前会话，或刚打开/创建的角色会话。正文必填。',
+    description: '以当前角色发送正式消息。文字可穿插小表情。也可使用 sticker_list 返回的真实 ID 发送图片表情包；纯表情包不必填写正文。',
     parameters: {
       type: 'object',
       properties: {
-        body: { type: 'string', minLength: 1, maxLength: 32768 },
+        body: { type: 'string', minLength: 1, maxLength: 32768, description: '正文可自然穿插 [微笑]、[捂脸]、[旺柴]、[裂开] 等微信式小表情，会显示为行内图片。图片表情包使用 stickerId，不要编造表情包 ID。' },
         quotedMessageId: { type: 'string' },
-        stickerId: { type: 'string', description:'可选，sticker_list 返回的表情 ID；作为图片随消息发送。' },
+        stickerId: { type: 'string', description:'可选，sticker_list 返回的已识别表情 ID；按含义和场景选择，不能编造。' },
         conversationId: { type: 'string' }
       },
-      required: ['body'],
       additionalProperties: false
     }
   },
-  { name:'sticker_list',description:'查看本机可用于聊天的表情包名称和 ID。',
-    parameters:{type:'object',properties:{},additionalProperties:false} },
+  { name:'sticker_list',description:'查找本机已理解含义的表情包，返回 ID、画面含义、配字及适用场景。可按情绪或场景查询；不返回尚未识别的图片。',
+    parameters:{type:'object',properties:{query:{type:'string',maxLength:80,description:'可选，简短情绪或场景关键词，例如：晚安、开心、无语'}},additionalProperties:false} },
   {
     name: 'message_react',
     description: '对当前会话中的一条消息添加或取消一个表情。',

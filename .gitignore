@@ -24,5 +24,6 @@ keystore.properties
 .local/
 
 release-output/
+*-check.png
 
 android/app/src/androidTest/assets/update-fixtures/

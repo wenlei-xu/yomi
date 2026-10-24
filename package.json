@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/copy-sqlite-wasm.cjs",
     "dev": "vite --host --port 5188 --strictPort",
+    "prebuild": "node scripts/copy-sqlite-wasm.cjs",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test:agent": "node scripts/audit-agent.cjs",
@@ -12,7 +14,12 @@
     "android:release": "node scripts/release.cjs",
     "test:local": "node scripts/audit-local-features.cjs",
     "test:memory": "node scripts/check-memory-links.cjs",
+    "test:memory-media-ui": "node scripts/check-memory-media-ui.cjs",
     "test:messaging": "node scripts/check-messaging.cjs",
+    "test:providers": "node scripts/check-model-connections.cjs",
+    "test:stickers": "node scripts/check-sticker-recognition.cjs",
+    "test:groups": "node scripts/check-group-settings.cjs",
+    "test:settings-ui": "node scripts/check-settings-ui.cjs",
     "signing:init": "node scripts/init-signing.cjs",
     "release": "node scripts/release.cjs",
     "release:web": "node scripts/release-web.cjs",
@@ -42,5 +49,10 @@
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
+  },
+  "overrides": {
+    "jeep-sqlite": {
+      "sql.js": "1.11.0"
+    }
   }
 }

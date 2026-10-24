@@ -47,8 +47,8 @@ export function MessageSearch({ app, conversationId, open }: {
       <label>发言人<select value={author} onChange={event => { reset(); setAuthor(event.target.value) }}>
         <option value="">全部发言人</option>{actors.map(actor => <option key={actor.id} value={actor.id}>{actor.name}</option>)}
       </select></label>
-      <div className="actions"><button disabled={busy || !query.trim()}>搜索</button>
-        {busy && <button type="button" onClick={() => { generation.current++; setBusy(false) }}>取消搜索</button>}</div>
+      <div className="actions"><button className="btn-primary" disabled={busy || !query.trim()}>搜索</button>
+        {busy && <button className="btn-quiet" type="button" onClick={() => { generation.current++; setBusy(false) }}>取消搜索</button>}</div>
     </form>
     <div className="search-results" aria-live="polite">
       {error && <p role="alert">{error}</p>}
@@ -58,7 +58,7 @@ export function MessageSearch({ app, conversationId, open }: {
       </button>)}
       {busy && <p role="status">正在搜索本地记录…</p>}
       {searched && !hits.length && <p>没有找到匹配消息。</p>}
-      {more && <button disabled={busy} onClick={() => void search(true)}>加载更多结果</button>}
+      {more && <button className="btn-secondary" disabled={busy} onClick={() => void search(true)}>加载更多结果</button>}
     </div>
   </div>
 }

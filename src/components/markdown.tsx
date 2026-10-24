@@ -1,4 +1,10 @@
 import React, { Fragment } from 'react'
+import { splitEmoticons } from './emoticons'
+
+export function EmoticonText({ text }: { text: string }) {
+  return <>{splitEmoticons(text).map((part, index) => typeof part === 'string' ? part
+    : <img key={index} className="inline-emoticon" src={part.src} alt={part.code} title={part.name} draggable={false}/>)}</>
+}
 
 const safeProtocols = new Set(['http:', 'https:', 'mailto:'])
 
@@ -17,18 +23,18 @@ function inline(text: string, keyPrefix: string): React.ReactNode[] {
   let cursor = 0
   let match: RegExpExecArray | null
   while ((match = tokens.exec(text))) {
-    if (match.index > cursor) result.push(text.slice(cursor, match.index))
+    if (match.index > cursor) result.push(<EmoticonText key={`${keyPrefix}-text-${cursor}`} text={text.slice(cursor, match.index)}/>)
     const token = match[0]
     const key = `${keyPrefix}-${match.index}`
     if (token.startsWith('`')) {
       result.push(<code key={key}>{token.slice(1, -1)}</code>)
     } else if (token.startsWith('**')) {
-      result.push(<strong key={key}>{token.slice(2, -2)}</strong>)
+      result.push(<strong key={key}><EmoticonText text={token.slice(2, -2)}/></strong>)
     } else if (token.startsWith('[')) {
       const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token)
       const href = link ? safeHref(link[2]) : null
       result.push(href
-        ? <a key={key} href={href} onClick={openExternal}>{link![1]}</a>
+        ? <a key={key} href={href} onClick={openExternal}><EmoticonText text={link![1]}/></a>
         : token)
     } else {
       const href = safeHref(token)
@@ -38,7 +44,7 @@ function inline(text: string, keyPrefix: string): React.ReactNode[] {
     }
     cursor = tokens.lastIndex
   }
-  if (cursor < text.length) result.push(text.slice(cursor))
+  if (cursor < text.length) result.push(<EmoticonText key={`${keyPrefix}-tail`} text={text.slice(cursor)}/>)
   return result
 }
 

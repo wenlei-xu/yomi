@@ -26,13 +26,15 @@ async function main(){
  try{
  const page=await browser.newPage({viewport:{width:390,height:844}}),errors=[];page.on('pageerror',e=>{errors.push(e.message);console.error('UI ERROR',e.message)});page.on('dialog',d=>d.accept())
  await page.goto('http://127.0.0.1:'+server.address().port)
- await page.locator('.conversation-row').click();await page.getByRole('button',{name:'编辑',exact:true}).nth(1).click();await page.getByLabel('消息正文').fill('edited hello');await page.getByRole('button',{name:'保存',exact:true}).click();await page.getByText('edited hello',{exact:true}).waitFor()
- await page.getByRole('button',{name:'表情 👍',exact:true}).first().click()
- await page.getByRole('button',{name:'撤回',exact:true}).click();await page.getByText('recalled',{exact:true}).waitFor()
+ assert.equal(await page.locator('.conversation-row .row-time').count(),1)
+ assert.ok((await page.locator('.conversation-row .row-time').textContent()).trim().length>0)
+ await page.locator('.conversation-row').click();await page.getByRole('button',{name:'更多消息操作',exact:true}).last().click();await page.getByRole('menuitem',{name:'编辑消息',exact:true}).click();await page.getByLabel('消息正文').fill('edited hello');await page.getByRole('button',{name:'保存',exact:true}).click();await page.getByText('edited hello',{exact:true}).waitFor()
+ await page.locator('article.mine').getByRole('button',{name:'给 Me 的消息添加表情',exact:true}).click();assert.equal(await page.getByRole('menu',{name:'消息操作',exact:true}).count(),0);await page.getByRole('group',{name:'选择表情',exact:true}).waitFor();await page.getByRole('button',{name:'表情 👍',exact:true}).click()
+ await page.locator('article.mine').getByRole('button',{name:'更多消息操作',exact:true}).click();await page.getByRole('menuitem',{name:'撤回消息',exact:true}).click();await page.getByText('你撤回了一条消息',{exact:true}).waitFor()
  await page.getByRole('button',{name:'更多',exact:true}).click();await page.getByRole('button',{name:'搜索本会话',exact:true}).click();await page.getByLabel('关键词').fill('hello');await page.getByRole('button',{name:'搜索',exact:true}).click();await page.getByText('已找到 1 条',{exact:true}).waitFor();await page.locator('.search-hit').click()
- await page.getByRole('button',{name:'重新生成',exact:true}).click();await page.waitForFunction(()=>window.testCalls.some(c=>c[0]==='regenerate'))
+ await page.locator('article:not(.mine)').getByRole('button',{name:'更多消息操作',exact:true}).last().click();await page.getByRole('menuitem',{name:'重新生成',exact:true}).click();await page.waitForFunction(()=>window.testCalls.some(c=>c[0]==='regenerate'))
  assert.deepEqual(errors,[])
- console.log('PASS UI: edit/save, emoji, recall, scoped search/jump, and regenerate navigation at mobile viewport')
+ console.log('PASS UI: conversation time, edit/save, emoji, recall, scoped search/jump, and regenerate navigation at mobile viewport')
  console.log(JSON.stringify(await page.evaluate(()=>window.testCalls)))
  }finally{await browser.close();server.close()}
 }

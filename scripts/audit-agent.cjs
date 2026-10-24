@@ -54,6 +54,7 @@ async function fixture() {
   }
   const database = new Database()
   database.db = connection
+  database.persistWebStore = async () => { assert.equal(active, false) }
   const repo = new Repository(database)
   await repo.ensureLocalUser()
   const a = await repo.saveAgent({ name: 'Alpha' })
@@ -244,7 +245,8 @@ async function main() {
     await f.repo.updateMembers(f.room.id, [c.id], [])
     await f.repo.sendUserMessage(f.room.id, 'NEW', 'new')
     const visible = await f.repo.agentMessages(c.id, f.room.id, { through: 100 })
-    assert.equal(visible.length, 1); assert.equal(visible[0].body, 'NEW')
+    assert.deepEqual(visible.filter(item => item.authorKind !== 'system').map(item => item.body), ['NEW'])
+    assert.ok(visible.some(item => item.authorKind === 'system' && item.body.includes('New')))
     f.sql.close()
   })
   await check('Atomic activity budget rejects call 65', async () => {

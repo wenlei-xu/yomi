@@ -11,6 +11,7 @@ async function fixture(){
   const sql=new DatabaseSync(':memory:');sql.exec(schema);databases.push(sql)
   const db=new Database();db.db={query:async(q,v=[])=>({values:sql.prepare(q).all(...v)}),run:async(q,v=[])=>sql.prepare(q).run(...v),execute:async q=>sql.exec(q),
     isTransactionActive:async()=>({result:sql.isTransaction}),beginTransaction:async()=>sql.exec('BEGIN'),commitTransaction:async()=>sql.exec('COMMIT'),rollbackTransaction:async()=>sql.exec('ROLLBACK')}
+  db.persistWebStore=async()=>{assert.equal(sql.isTransaction,false)}
   const repo=new Repository(db);await repo.ensureLocalUser();const a=await repo.saveAgent({name:'A'}),b=await repo.saveAgent({name:'B'})
   const room=await repo.createGroup('Group',[a.id,b.id]),dm=await repo.openDirect(a.id)
   const runtime=new AgentRuntime(repo,()=>repo.listProviders(),()=>repo.listBindings());runtime.wakeConversation=()=>{}
@@ -78,7 +79,9 @@ async function main(){
    const text=(await f.repo.linkedMemoryContext(f.dm.id,f.a.id)).text
    assert.match(text,/AFTER_JOIN/);assert.doesNotMatch(text,/BEFORE_JOIN/)
    await f.repo.setConversationMemorySources(f.dm.id,f.a.id,[]);assert.equal((await f.repo.linkedMemoryContext(f.dm.id,f.a.id)).text,'')
-   assert.equal((await f.repo.allMessages(f.room.id)).length,2)
+   const history=await f.repo.allMessages(f.room.id)
+   assert.deepEqual(history.filter(message=>message.authorKind!=='system').map(message=>message.body),['BEFORE_JOIN','AFTER_JOIN'])
+   assert.equal(history.filter(message=>message.authorKind==='system').length,2)
    await f.repo.setConversationMemorySources(f.dm.id,f.a.id,[f.room.id]);await f.repo.updateMembers(f.room.id,[],[f.a.id])
    assert.equal((await f.repo.linkedMemoryContext(f.dm.id,f.a.id)).text,'')
    assert.equal((await f.repo.conversationMemorySources(f.dm.id,f.a.id)).find(s=>s.id===f.room.id).available,false)

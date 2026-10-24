@@ -1,6 +1,8 @@
 import type { SQLiteDBConnection } from '@capacitor-community/sqlite'
 import type {
   Actor,
+  AgentSettingsUpdate,
+  AgentStatus,
   Conversation,
   ConversationKind,
   Lorebook,
@@ -11,6 +13,7 @@ import type {
   ModelBinding,
   ModelCallRecord,
   Provider,
+  ProviderChannelKind,
   ConversationNote,
   ConversationNoteScope,
   SummarySpan,
@@ -22,6 +25,8 @@ import type {
   RuntimeIssue,
   SearchHit,
   Sticker,
+  StickerMeaning,
+  StickerRecognitionSettings,
   StorageStats,
   UsageSummary,
   RetryJob,
@@ -31,7 +36,8 @@ import { Database, type Row } from './database'
 import { parseCharacterCard, replaceCardMacros, type ImportedCharacter, type ImportedBook } from './characterCard'
 import { worldContext } from './worldContext'
 import { estimateTokens } from '../agent/limits'
-import { defaultMediaSettings, type MediaSettings } from '../domain/types'
+import { defaultMediaSettings, defaultStickerRecognitionSettings, type MediaSettings } from '../domain/types'
+import { parseStickerMeaning, stickerContentHash, stickerMeaningText } from '../media/stickerMeaning'
 
 const localUserId = 'local-user'
 const maxMessageLength = 32 * 1024
@@ -74,6 +80,26 @@ function num(value: unknown): number { return typeof value === 'number' && Numbe
 function nullableNum(value: unknown): number | null { return typeof value === 'number' && Number.isFinite(value) ? value : null }
 function bool(value: unknown): boolean { return value === 1 || value === true }
 function now(): number { return Date.now() }
+function parseProviderModelSelections(raw: string): Record<string, string[]> {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const result: Record<string, string[]> = {}
+    for (const [providerId, values] of Object.entries(parsed)) {
+      if (Array.isArray(values)) result[providerId] = [...new Set(values
+        .filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).map(value => value.trim()))]
+    }
+    return result
+  } catch { return {} }
+}
+function parseProviderChannelKinds(raw: string): Record<string, ProviderChannelKind> {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, ProviderChannelKind] =>
+      entry[1] === 'text' || entry[1] === 'image' || entry[1] === 'speech'))
+  } catch { return {} }
+}
 async function rows(db: SQLiteDBConnection, sql: string, values: unknown[] = []): Promise<Row[]> {
   return ((await db.query(sql, values)).values ?? []) as Row[]
 }
@@ -153,13 +179,13 @@ export class Repository {
       const membership = (await rows(db, `SELECT joined_sequence FROM conversation_members
         WHERE conversation_id=? AND actor_id=? AND left_sequence IS NULL`, [conversationId, agentId]))[0]
       if (!membership) throw new Error('无权读取该会话')
-      const data = await rows(db, `SELECT m.* FROM messages m WHERE m.conversation_id=? AND m.deleted=0
+      const data = await rows(db, `SELECT m.*,a.prompt sticker_prompt FROM messages m LEFT JOIN media_assets a ON a.id=m.media_id WHERE m.conversation_id=? AND m.deleted=0
         AND m.sequence>=? AND (m.sequence<=? OR m.origin_run_id IN
           (SELECT id FROM runs WHERE round_message_id=? AND conversation_id=?))
         AND (?='' OR instr(lower(m.body),lower(?))>0) ORDER BY m.sequence DESC LIMIT ?`,
       [conversationId, num(membership.joined_sequence), scope.through, scope.roundMessageId ?? null,
         conversationId, query, query, Math.min(Math.max(limit, 1), 100)])
-      return data.map(message).reverse()
+      return data.map(agentMessage).reverse()
     })
   }
 
@@ -175,10 +201,10 @@ export class Repository {
     })
   }
 
-  async saveUserProfile(name: string, bio = ''): Promise<void> {
+  async saveUserProfile(name: string, bio = '', avatarData?: string): Promise<void> {
     await this.db.write(async db => db.run(
-      `UPDATE actors SET name=?,bio=?,profile_version=profile_version+1,updated_at=? WHERE id=?`,
-      [name.trim() || '我', bio.trim(), now(), localUserId]
+      `UPDATE actors SET name=?,bio=?,avatar_data=COALESCE(?,avatar_data),profile_version=profile_version+1,updated_at=? WHERE id=?`,
+      [name.trim() || '我', bio.trim(), avatarData ?? null, now(), localUserId]
     ))
   }
 
@@ -211,7 +237,65 @@ export class Repository {
   }
 
   async deleteProvider(providerId: string): Promise<void> {
-    await this.db.write(async db => db.run('DELETE FROM providers WHERE id=?', [providerId]))
+    await this.db.write(async db => {
+      await db.run('DELETE FROM providers WHERE id=?', [providerId])
+      const selectionsRow = (await rows(db, "SELECT value FROM app_settings WHERE key='provider.model-selections'"))[0]
+      if (selectionsRow) {
+        const selections = parseProviderModelSelections(text(selectionsRow.value))
+        delete selections[providerId]
+        await db.run("UPDATE app_settings SET value=?,updated_at=? WHERE key='provider.model-selections'", [JSON.stringify(selections), now()])
+      }
+      const kindsRow = (await rows(db, "SELECT value FROM app_settings WHERE key='provider.channel-kinds'"))[0]
+      if (kindsRow) {
+        const kinds = parseProviderChannelKinds(text(kindsRow.value))
+        delete kinds[providerId]
+        await db.run("UPDATE app_settings SET value=?,updated_at=? WHERE key='provider.channel-kinds'", [JSON.stringify(kinds), now()])
+      }
+    })
+  }
+
+  async providerChannelKinds(): Promise<Record<string, ProviderChannelKind>> {
+    return this.db.read(async db => {
+      const row = (await rows(db, "SELECT value FROM app_settings WHERE key='provider.channel-kinds'"))[0]
+      return row ? parseProviderChannelKinds(text(row.value)) : {}
+    })
+  }
+
+  async saveProviderChannelKind(providerId: string, kind: ProviderChannelKind): Promise<void> {
+    const idValue = providerId.trim()
+    if (!idValue || idValue.length > 200 || !['text', 'image', 'speech'].includes(kind)) throw new Error('渠道类型无效')
+    await this.db.write(async db => {
+      if (!(await rows(db, 'SELECT 1 FROM providers WHERE id=?', [idValue])).length) throw new Error('渠道不存在')
+      const row = (await rows(db, "SELECT value FROM app_settings WHERE key='provider.channel-kinds'"))[0]
+      const kinds = row ? parseProviderChannelKinds(text(row.value)) : {}
+      kinds[idValue] = kind
+      await db.run(`INSERT INTO app_settings(key,value,updated_at) VALUES ('provider.channel-kinds',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, [JSON.stringify(kinds), now()])
+    })
+  }
+
+  async providerModelSelections(): Promise<Record<string, string[]>> {
+    return this.db.read(async db => {
+      const row = (await rows(db, "SELECT value FROM app_settings WHERE key='provider.model-selections'"))[0]
+      return row ? parseProviderModelSelections(text(row.value)) : {}
+    })
+  }
+
+  async saveProviderModelSelection(providerId: string, modelIds: string[]): Promise<void> {
+    const idValue = providerId.trim()
+    const ids = [...new Set(modelIds.map(value => value.trim()).filter(Boolean))]
+    if (!idValue || idValue.length > 200 || ids.length > 1000 || ids.some(value => value.length > 500)) {
+      throw new Error('渠道或模型列表无效')
+    }
+    await this.db.write(async db => {
+      if (!(await rows(db, 'SELECT 1 FROM providers WHERE id=?', [idValue])).length) throw new Error('渠道不存在')
+      const row = (await rows(db, "SELECT value FROM app_settings WHERE key='provider.model-selections'"))[0]
+      const selections = row ? parseProviderModelSelections(text(row.value)) : {}
+      if (ids.length) selections[idValue] = ids
+      else delete selections[idValue]
+      await db.run(`INSERT INTO app_settings(key,value,updated_at) VALUES ('provider.model-selections',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, [JSON.stringify(selections), now()])
+    })
   }
 
   async saveBinding(input: ModelBinding): Promise<void> {
@@ -269,25 +353,32 @@ export class Repository {
 
   async saveAgent(input: Partial<Actor> & { name: string }): Promise<Actor> {
     if (!input.name.trim()) throw new Error('角色名称不能为空')
-    const timestamp = now()
-    const saved: Actor = {
-      id: input.id ?? id(),
-      kind: 'agent',
-      name: input.name.trim(),
-      color: input.color ?? '#7c3aed',
-      bio: input.bio ?? '',
-      persona: input.persona ?? '',
-      speakingStyle: input.speakingStyle ?? '',
-      avatarData: input.avatarData ?? '',
-      enabled: input.enabled ?? true,
-      archived: input.archived ?? false,
-      profileVersion: input.profileVersion ?? 1,
-      allowPrivate: input.allowPrivate ?? true,
-      allowGroup: input.allowGroup ?? true,
-      createdAt: input.createdAt ?? timestamp,
-      updatedAt: timestamp
-    }
-    await this.db.write(async db => {
+    if (input.id === localUserId) throw new Error('个人资料不能作为角色修改')
+    return this.atomic(async (repo, db) => {
+      const current = input.id ? await repo.getActor(input.id) : null
+      if (current && current.kind !== 'agent') throw new Error('角色不存在')
+      const timestamp = now()
+      const saved: Actor = {
+        id: input.id ?? id(),
+        kind: 'agent',
+        name: input.name.trim(),
+        color: input.color ?? current?.color ?? '#46a6d9',
+        bio: input.bio ?? current?.bio ?? '',
+        persona: input.persona ?? current?.persona ?? '',
+        speakingStyle: input.speakingStyle ?? current?.speakingStyle ?? '',
+        avatarData: input.avatarData ?? current?.avatarData ?? '',
+        enabled: input.enabled ?? current?.enabled ?? true,
+        archived: input.archived ?? current?.archived ?? false,
+        profileVersion: current?.profileVersion ?? 1,
+        allowPrivate: input.allowPrivate ?? current?.allowPrivate ?? true,
+        allowGroup: input.allowGroup ?? current?.allowGroup ?? true,
+        createdAt: current?.createdAt ?? input.createdAt ?? timestamp,
+        updatedAt: timestamp
+      }
+      if (saved.archived) saved.enabled = false
+      const changed = current && (['name', 'bio', 'persona', 'speakingStyle', 'enabled', 'archived', 'allowPrivate', 'allowGroup'] as const)
+        .some(key => current[key] !== saved[key])
+      if (changed) saved.profileVersion++
       await db.run(
       `INSERT INTO actors(
         id,kind,name,color,bio,persona,speaking_style,avatar_data,enabled,archived,
@@ -296,16 +387,98 @@ export class Repository {
       ON CONFLICT(id) DO UPDATE SET name=excluded.name,color=excluded.color,bio=excluded.bio,
         persona=excluded.persona,speaking_style=excluded.speaking_style,
         avatar_data=excluded.avatar_data,enabled=excluded.enabled,archived=excluded.archived,
-        profile_version=actors.profile_version+1,allow_private=excluded.allow_private,
+        profile_version=excluded.profile_version,allow_private=excluded.allow_private,
         allow_group=excluded.allow_group,updated_at=excluded.updated_at`,
       [saved.id, saved.name, saved.color, saved.bio, saved.persona, saved.speakingStyle,
         saved.avatarData, saved.enabled ? 1 : 0, saved.archived ? 1 : 0,
         saved.profileVersion, saved.allowPrivate ? 1 : 0, saved.allowGroup ? 1 : 0,
         saved.createdAt, timestamp]
       )
-      await db.run('UPDATE summaries SET valid=0 WHERE agent_id=?', [saved.id])
+      if (current?.name !== saved.name) await db.run(`UPDATE conversations SET title=? WHERE kind='direct' AND title=? AND id IN
+        (SELECT conversation_id FROM conversation_members WHERE actor_id=?)`, [saved.name, current?.name ?? '', saved.id])
+      if (current && current.name !== saved.name) {
+        const rooms = await rows(db, `SELECT id,title FROM conversations WHERE kind='agent_direct' AND id IN
+          (SELECT conversation_id FROM conversation_members WHERE actor_id=?)`, [saved.id])
+        for (const room of rooms) {
+          const members = await rows(db, `SELECT a.id,a.name FROM conversation_members m JOIN actors a ON a.id=m.actor_id
+            WHERE m.conversation_id=? AND m.left_sequence IS NULL ORDER BY m.ordinal`, [room.id])
+          const titleOrder = [members, [...members].reverse()].find(order => room.title ===
+            order.map(member => member.id === saved.id ? current.name : text(member.name)).join(' × '))
+          if (titleOrder) await db.run('UPDATE conversations SET title=? WHERE id=?',
+            [titleOrder.map(member => text(member.name)).join(' × '), room.id])
+        }
+      }
+      if (changed) {
+        await db.run('UPDATE summaries SET valid=0 WHERE agent_id=?', [saved.id])
+        await repo.cancelAgentWork(saved.id, saved.archived ? '角色已归档' : !saved.enabled ? '角色已停用' : '角色设定已更新')
+      }
+      return (await repo.getActor(saved.id))!
     })
-    return (await this.getActor(saved.id))!
+  }
+
+  async saveAgentDetails(input: Partial<Actor> & { name: string }, settings: AgentSettingsUpdate = {}): Promise<Actor> {
+    return this.atomic(async (repo, db) => {
+      const saved = await repo.saveAgent(input)
+      let changed = false
+      if (settings.privateMemo !== undefined) {
+        const memo = (await rows(db, `SELECT id,body FROM memories WHERE agent_id=? AND kind='private-note'
+          AND conversation_id IS NULL AND origin='human' ORDER BY updated_at DESC LIMIT 1`, [saved.id]))[0]
+        const body = settings.privateMemo.trim()
+        if (body !== text(memo?.body)) {
+          if (body) await repo.saveMemory({ id: memo ? text(memo.id) : undefined, agentId: saved.id,
+            body, kind: 'private-note', origin: 'human', pinned: true })
+          else if (memo) await repo.deleteMemory(text(memo.id), true)
+          changed = true
+        }
+      }
+      if (settings.modelBindings !== undefined) {
+        const models = settings.modelBindings
+        if (new Set(models.map(model => model.purpose)).size !== models.length
+          || models.some(model => !['main', 'triage', 'summary'].includes(model.purpose))) throw new Error('角色模型用途无效或重复')
+        const old = (await repo.listBindings()).filter(model => model.agentId === saved.id)
+        const kinds = await repo.providerChannelKinds()
+        const providers = await repo.listProviders()
+        for (const purpose of ['main', 'triage', 'summary'] as const) {
+          const model = models.find(item => item.purpose === purpose)
+          const previous = old.find(item => item.purpose === purpose)
+          if (model) {
+            if (!providers.some(provider => provider.id === model.providerId && provider.enabled)
+              || (kinds[model.providerId ?? ''] ?? 'text') !== 'text') throw new Error('角色模型请选择可用的文字渠道')
+            if (!previous || (['providerId', 'modelId', 'contextTokens', 'outputTokens'] as const).some(key => previous[key] !== model[key])) {
+              await repo.saveBinding({ ...model, agentId: saved.id })
+              changed = true
+            }
+          } else if (previous) { await repo.clearAgentBinding(saved.id, purpose); changed = true }
+        }
+      }
+      if (changed) {
+        await db.run('UPDATE actors SET profile_version=profile_version+1 WHERE id=?', [saved.id])
+        await db.run('UPDATE summaries SET valid=0 WHERE agent_id=?', [saved.id])
+        await repo.cancelAgentWork(saved.id, '角色设定已更新')
+      }
+      return (await repo.getActor(saved.id))!
+    })
+  }
+
+  async setAgentStatus(agentId: string, status: AgentStatus): Promise<Actor> {
+    if (!['active', 'disabled', 'archived'].includes(status)) throw new Error('角色状态无效')
+    return this.atomic(async repo => {
+      const current = await repo.getActor(agentId)
+      if (!current || current.kind !== 'agent') throw new Error('角色不存在')
+      return repo.saveAgent({ id: agentId, name: current.name, enabled: status === 'active', archived: status === 'archived' })
+    })
+  }
+
+  private async cancelAgentWork(agentId: string, reason: string): Promise<void> {
+    await this.db.write(async db => {
+      const timestamp = now()
+      await db.run(`UPDATE inbox_events SET status='cancelled',reason=?,updated_at=?
+        WHERE agent_id=? AND status IN ('pending','claimed','deferred')`, [reason, timestamp, agentId])
+      await db.run(`UPDATE runs SET status='cancelled',phase='cancelled',reason=?,updated_at=?,ended_at=?
+        WHERE agent_id=? AND status NOT IN ('completed','cancelled','skipped')`, [reason, timestamp, timestamp, agentId])
+      await db.run(`UPDATE retry_jobs SET status='cancelled',updated_at=? WHERE agent_id=?
+        AND status IN ('pending','dispatched','dormant')`, [timestamp, agentId])
+    })
   }
 
   async copyAgent(agentId: string): Promise<Actor> {
@@ -333,6 +506,7 @@ export class Repository {
 
   async deleteAgent(agentId: string): Promise<void> {
     await this.db.write(async db => {
+      if (!(await rows(db, "SELECT 1 FROM actors WHERE id=? AND kind='agent'", [agentId])).length) throw new Error('角色不存在')
       await db.run('UPDATE media_assets SET owner_actor_id=NULL WHERE owner_actor_id=?', [agentId])
       const timestamp = now()
       await db.run(`UPDATE conversations SET cancel_epoch=cancel_epoch+1 WHERE id IN
@@ -349,6 +523,8 @@ export class Repository {
 
   async openDirect(agentId: string): Promise<Conversation> {
     return this.db.write(async db => {
+      const agentRow = (await rows(db, "SELECT * FROM actors WHERE id=? AND kind='agent'", [agentId]))[0]
+      if (!agentRow) throw new Error('角色不存在')
       const key = JSON.stringify(['direct', localUserId, agentId].sort())
       const existing = (await rows(db, 'SELECT id FROM conversations WHERE direct_key=?', [key]))[0]
       if (existing) {
@@ -356,9 +532,7 @@ export class Repository {
         await db.run('UPDATE conversations SET hidden=0,updated_at=? WHERE id=?', [now(), conversationId])
         return this.getConversationIn(db, conversationId)
       }
-      const agentRow = (await rows(db, `SELECT * FROM actors
-        WHERE id=? AND kind='agent' AND archived=0`, [agentId]))[0]
-      if (!agentRow) throw new Error('角色不存在或已归档')
+      if (!bool(agentRow.enabled) || bool(agentRow.archived)) throw new Error('请先启用角色再开始新聊天')
       const conversationId = id(), timestamp = now()
       await db.run(
         `INSERT INTO conversations(id,kind,title,topic,direct_key,created_at,updated_at)
@@ -377,13 +551,15 @@ export class Repository {
 
   async createGroup(title: string, memberIds: string[], topic = ''): Promise<Conversation> {
     if (!title.trim()) throw new Error('群名称不能为空')
+    if (title.trim().length > 50) throw new Error('群聊名称最多 50 个字符')
+    if (topic.trim().length > 4000) throw new Error('聊天话题最多 4,000 个字符')
     const members = [...new Set(memberIds)]
     if (members.length < 1 || members.length > 8) throw new Error('群聊需要 1–8 个角色')
     return this.db.write(async db => {
       const valid = await rows(db,
-        `SELECT id FROM actors WHERE kind='agent' AND archived=0
+        `SELECT id FROM actors WHERE kind='agent' AND archived=0 AND enabled=1
          AND id IN (${members.map(() => '?').join(',')})`, members)
-      if (valid.length !== members.length) throw new Error('包含不存在或已归档的角色')
+      if (valid.length !== members.length) throw new Error('请只选择已启用的角色建群')
       const conversationId = id(), timestamp = now()
       await db.run(
         `INSERT INTO conversations(id,kind,title,topic,created_at,updated_at)
@@ -550,15 +726,15 @@ export class Repository {
       const conversationRow = (await rows(db, 'SELECT * FROM conversations WHERE id=?', [conversationId]))[0]
       if (!conversationRow || text(conversationRow.kind) !== 'group') throw new Error('只能修改普通群成员')
       const currentRows = await rows(db, `SELECT actor_id FROM conversation_members
-        WHERE conversation_id=? AND left_sequence IS NULL`, [conversationId])
+        WHERE conversation_id=? AND left_sequence IS NULL ORDER BY ordinal`, [conversationId])
       const current = currentRows.map(row => text(row.actor_id))
       const added = [...new Set(addIds.filter(actorId => !current.includes(actorId)))]
       const removed = [...new Set(removeIds.filter(actorId => actorId !== localUserId && current.includes(actorId)))]
       if (current.length + added.length - removed.length > 9) throw new Error('群成员不能超过 9 人')
-      let ordinal = current.length
+      let ordinal = num((await rows(db, 'SELECT MAX(ordinal) AS last_ordinal FROM conversation_members WHERE conversation_id=?', [conversationId]))[0].last_ordinal) + 1
       for (const actorId of added) {
         const valid = (await rows(db, `SELECT 1 FROM actors
-          WHERE id=? AND kind='agent' AND archived=0`, [actorId])).length
+          WHERE id=? AND kind='agent' AND archived=0 AND enabled=1`, [actorId])).length
         if (!valid) throw new Error('只能添加可用角色')
         await db.run(
           `INSERT INTO conversation_members(conversation_id,actor_id,ordinal,joined_sequence)
@@ -581,6 +757,10 @@ export class Repository {
         await db.run(`UPDATE conversations SET membership_version=membership_version+1,
           content_revision=content_revision+1,cancel_epoch=cancel_epoch+1,updated_at=? WHERE id=?`,
         [now(), conversationId])
+        await this.retireConversationWork(db, conversationId, '群成员已变更')
+        const names = async (ids: string[]) => ids.length ? (await rows(db, `SELECT name FROM actors WHERE id IN (${ids.map(() => '?').join(',')})`, ids)).map(row => text(row.name)).join('、') : ''
+        const changes = [added.length ? `你邀请${await names(added)}加入了群聊` : '', removed.length ? `你将${await names(removed)}移出了群聊` : ''].filter(Boolean)
+        await this.insertConversationNotice(db, conversationId, changes.join('；'))
       }
     })
   }
@@ -608,6 +788,11 @@ export class Repository {
       if (!conversationRow) throw new Error('会话不存在')
       if (text(conversationRow.kind).startsWith('agent_')) throw new Error('旁观会话不可发送')
       if (bool(conversationRow.paused)) throw new Error('会话已暂停')
+      if (text(conversationRow.kind) === 'direct' && !(await rows(db, `SELECT 1 FROM conversation_members m
+        JOIN actors a ON a.id=m.actor_id WHERE m.conversation_id=? AND m.left_sequence IS NULL
+        AND a.kind='agent' AND a.enabled=1 AND a.archived=0`, [conversationId])).length) {
+        throw new Error('角色已停用、归档或删除，请先启用角色')
+      }
       if (mediaId && !(await rows(db,"SELECT 1 FROM media_assets WHERE id=? AND status='ready'",[mediaId])).length) throw new Error('媒体不存在')
       const normalized = body.trim()
       if (!normalized) throw new Error('消息不能为空')
@@ -667,6 +852,7 @@ export class Repository {
     body: string
     quotedId?: string | null
     mediaId?: string
+    sticker?: boolean
     expectedEpoch: number
     seenThrough: number
     freshnessThrough?: number | null
@@ -751,10 +937,10 @@ export class Repository {
         updated_at=? WHERE id=?`, [sequence + 1, timestamp, input.conversationId])
       await db.run(
         `INSERT INTO messages(id,conversation_id,author_id,author_name,author_kind,body,sequence,
-          quoted_id,request_id,activity_id,origin_run_id,created_at,media_id)
-         VALUES (?,?,?,?, 'agent',?,?,?,?,?,?,?,?)`,
+          quoted_id,request_id,activity_id,origin_run_id,created_at,media_id,sticker)
+         VALUES (?,?,?,?, 'agent',?,?,?,?,?,?,?,?,?)`,
         [messageId, input.conversationId, input.authorId, text(author.name), normalized, sequence,
-          input.quotedId ?? null, id(), input.activityId ?? null, input.runId, timestamp, input.mediaId ?? null]
+          input.quotedId ?? null, id(), input.activityId ?? null, input.runId, timestamp, input.mediaId ?? null, input.sticker ? 1 : 0]
       )
       await this.insertMentions(db, messageId, mentions)
       await this.insertInbox(db, input.conversationId, messageId, sequence, input.authorId)
@@ -767,7 +953,7 @@ export class Repository {
         status: 'sent',
         message: {
           id: messageId, conversationId: input.conversationId, authorId: input.authorId,
-          authorName: text(author.name), authorKind: 'agent', body: normalized, sequence,
+          authorName: text(author.name), authorKind: 'agent', body: normalized, sequence, sticker: Boolean(input.sticker),
           quotedId: input.quotedId ?? null, mentions, createdAt: timestamp,
           deleted: false, reactions: []
         }
@@ -1194,13 +1380,13 @@ export class Repository {
 
   async summarySource(conversationId: string, through: number, after = 0, agentId?: string): Promise<Message[]> {
     return this.db.read(async db => {
-      const data = await rows(db, `SELECT * FROM messages WHERE conversation_id=?
-        AND sequence<=? AND sequence>? AND deleted=0
-        AND (? IS NULL OR sequence>=(SELECT joined_sequence FROM conversation_members
+      const data = await rows(db, `SELECT m.*,a.prompt sticker_prompt FROM messages m LEFT JOIN media_assets a ON a.id=m.media_id WHERE m.conversation_id=?
+        AND m.sequence<=? AND m.sequence>? AND m.deleted=0
+        AND (? IS NULL OR m.sequence>=(SELECT joined_sequence FROM conversation_members
           WHERE conversation_id=? AND actor_id=? AND left_sequence IS NULL))
-        ORDER BY sequence ASC LIMIT 400`,
+        ORDER BY m.sequence ASC LIMIT 400`,
       [conversationId, through, after, agentId ?? null, conversationId, agentId ?? null])
-      return data.map(message)
+      return data.map(agentMessage)
     })
   }
 
@@ -1420,7 +1606,8 @@ export class Repository {
     return this.atomic(async (repo,db) => {
       const sticker=(await rows(db,'SELECT * FROM stickers WHERE id=?',[stickerId]))[0]
       if (!sticker) throw new Error('表情包不存在')
-      return repo.saveMediaAsset({kind:'image',providerId:'',modelId:'',prompt:`表情包：${text(sticker.name)}`,
+      const meaning = stickerFromRow(sticker).analysis
+      return repo.saveMediaAsset({kind:'image',providerId:'',modelId:'',prompt:`表情包：${text(sticker.name)}${meaning ? `\n图片含义（自动识别，仅作参考）：${stickerMeaningText(meaning)}` : ''}`,
         status:'ready',mimeType:text(sticker.data_url).split(';')[0].slice(5),data:text(sticker.data_url)})
     })
   }
@@ -1537,9 +1724,7 @@ export class Repository {
 
   async listStickers(): Promise<Sticker[]> {
     return this.db.read(async db => (await rows(db,
-      'SELECT * FROM stickers ORDER BY created_at DESC LIMIT 200')).map(row => ({
-        id: text(row.id), name: text(row.name), dataUrl: text(row.data_url), createdAt: num(row.created_at)
-      })))
+      'SELECT * FROM stickers ORDER BY created_at DESC,rowid DESC LIMIT 200')).map(stickerFromRow))
   }
 
   async saveSticker(name: string, dataUrl: string): Promise<Sticker> {
@@ -1549,12 +1734,87 @@ export class Repository {
       throw new Error('只支持 PNG/JPEG/WebP/GIF 图片')
     }
     if (dataUrl.length > maxStickerBytes) throw new Error('表情图片过大')
+    const contentHash = await stickerContentHash(dataUrl)
     return this.db.write(async db => {
-      const sticker: Sticker = { id: id(), name: trimmed, dataUrl, createdAt: now() }
-      await db.run('INSERT INTO stickers(id,name,data_url,created_at) VALUES (?,?,?,?)',
-        [sticker.id, sticker.name, sticker.dataUrl, sticker.createdAt])
+      const existing = (await rows(db, 'SELECT * FROM stickers WHERE content_hash=? OR data_url=? LIMIT 1', [contentHash, dataUrl]))[0]
+      if (existing) return stickerFromRow(existing)
+      if (num((await rows(db, 'SELECT COUNT(*) count FROM stickers'))[0]?.count) >= 200) throw new Error('最多收藏 200 个表情，请先删除一些')
+      const sticker: Sticker = { id: id(), name: trimmed, dataUrl, createdAt: now(), contentHash, analysisStatus: 'pending', analysis: null }
+      await db.run('INSERT INTO stickers(id,name,data_url,content_hash,created_at) VALUES (?,?,?,?,?)',
+        [sticker.id, sticker.name, sticker.dataUrl, contentHash, sticker.createdAt])
       return sticker
     })
+  }
+
+  async stickerRecognitionSettings(): Promise<StickerRecognitionSettings> {
+    return this.db.read(async db => {
+      const row = (await rows(db, "SELECT value FROM app_settings WHERE key='sticker.recognition'"))[0]
+      try {
+        const value = JSON.parse(text(row?.value, '{}'))
+        return { enabled: value.enabled === true, providerId: text(value.providerId), modelId: text(value.modelId),
+          consentedOrigin: text(value.consentedOrigin), revision: Math.max(0, Math.floor(num(value.revision))) }
+      } catch { return { ...defaultStickerRecognitionSettings } }
+    })
+  }
+
+  async saveStickerRecognitionSettings(input: Pick<StickerRecognitionSettings, 'enabled' | 'providerId' | 'modelId'>, consentGranted = false): Promise<StickerRecognitionSettings> {
+    return this.atomic(async (repo, db) => {
+      const previous = await repo.stickerRecognitionSettings()
+      const providerId = input.providerId.trim(), modelId = input.modelId.trim()
+      if (modelId.length > 500 || Boolean(providerId) !== Boolean(modelId)) throw new Error('请选择完整的识图渠道和模型')
+      const provider = (await repo.listProviders()).find(item => item.id === providerId && item.enabled)
+      const kinds = await repo.providerChannelKinds()
+      if (input.enabled && (!provider || !modelId || (kinds[providerId] && kinds[providerId] !== 'text'))) throw new Error('请选择文字渠道中支持看图的模型，不是生图模型')
+      const origin = provider ? new URL(provider.baseUrl).origin : ''
+      if (input.enabled && !consentGranted && previous.consentedOrigin !== origin) throw new Error('首次启用需同意将表情图片发送给所选识图服务，并承担调用费用')
+      const settings: StickerRecognitionSettings = { enabled: Boolean(input.enabled), providerId, modelId,
+        consentedOrigin: consentGranted && input.enabled ? origin : previous.consentedOrigin, revision: previous.revision + 1 }
+      await db.run(`INSERT INTO app_settings(key,value,updated_at) VALUES ('sticker.recognition',?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, [JSON.stringify(settings), now()])
+      return settings
+    })
+  }
+
+  async resetInterruptedStickerRecognition(): Promise<void> {
+    await this.db.write(db => db.run("UPDATE stickers SET analysis_status='failed',analysis_token='',analysis_error='上次识别中断，请手动重试，避免重复计费' WHERE analysis_status='analyzing'"))
+  }
+
+  async claimStickerRecognition(stickerId: string): Promise<Sticker | null> {
+    const original = (await this.listStickers()).find(item => item.id === stickerId && item.analysisStatus === 'pending')
+    if (!original) return null
+    const hash = original.contentHash || await stickerContentHash(original.dataUrl)
+    return this.db.write(async db => {
+      const row = (await rows(db, "SELECT * FROM stickers WHERE id=? AND data_url=? AND analysis_status='pending'", [stickerId, original.dataUrl]))[0]
+      if (!row) return null
+      const cached = (await rows(db, "SELECT * FROM stickers WHERE content_hash=? AND analysis_status='ready' LIMIT 1", [hash]))[0]
+      const analysis = cached && stickerFromRow(cached).analysis
+      const token = analysis ? '' : id()
+      await db.run('UPDATE stickers SET content_hash=?,analysis_status=?,analysis_json=?,analysis_error=\'\',analysis_token=? WHERE id=?',
+        [hash, analysis ? 'ready' : 'analyzing', analysis ? JSON.stringify(analysis) : '', token, stickerId])
+      return stickerFromRow({ ...row, content_hash: hash, analysis_status: analysis ? 'ready' : 'analyzing', analysis_json: analysis ? JSON.stringify(analysis) : '', analysis_token: token })
+    })
+  }
+
+  async finishStickerRecognition(stickerId: string, token: string, meaning: StickerMeaning | null, error: string, modelId: string): Promise<void> {
+    const normalized = meaning ? parseStickerMeaning(JSON.stringify(meaning)) : null
+    await this.db.write(db => db.run(`UPDATE stickers SET analysis_status=?,analysis_json=?,analysis_error=?,analysis_token='',analysis_model=?
+      WHERE id=? AND analysis_status='analyzing' AND analysis_token=?`,
+    [normalized ? 'ready' : 'failed', normalized ? JSON.stringify(normalized) : '', error.slice(0, 240), modelId, stickerId, token]))
+  }
+
+  async retryStickerRecognition(stickerId: string): Promise<void> {
+    await this.db.write(async db => {
+      const row = (await rows(db, 'SELECT analysis_status FROM stickers WHERE id=?', [stickerId]))[0]
+      if (!row) throw new Error('表情已删除')
+      if (row.analysis_status === 'ready' || row.analysis_status === 'analyzing') return
+      await db.run("UPDATE stickers SET analysis_status='pending',analysis_error='',analysis_token='' WHERE id=?", [stickerId])
+    })
+  }
+
+  async recognizedStickers(query = ''): Promise<Sticker[]> {
+    const words = query.trim().toLowerCase().split(/[\s,，、]+/).filter(Boolean).slice(0, 6)
+    return (await this.listStickers()).filter(item => item.analysisStatus === 'ready' && item.analysis
+      && (!words.length || words.some(word => stickerMeaningText(item.analysis!).toLowerCase().includes(word)))).slice(0, 24)
   }
 
   async deleteSticker(stickerId: string): Promise<void> {
@@ -1960,29 +2220,56 @@ export class Repository {
   async updateConversation(conversationId: string, patch: {
     title?: string
     topic?: string
+    announcement?: string
     pinned?: boolean
     muted?: boolean
     hidden?: boolean
     paused?: boolean
     autonomyPaused?: boolean
   }): Promise<void> {
-    const sets: string[] = [], values: unknown[] = []
-    if (patch.title !== undefined) { sets.push('title=?'); values.push(patch.title.trim()) }
-    if (patch.topic !== undefined) { sets.push('topic=?'); values.push(patch.topic.trim()) }
-    if (patch.pinned !== undefined) { sets.push('pinned=?'); values.push(patch.pinned ? 1 : 0) }
-    if (patch.muted !== undefined) { sets.push('muted=?'); values.push(patch.muted ? 1 : 0) }
-    if (patch.hidden !== undefined) { sets.push('hidden=?'); values.push(patch.hidden ? 1 : 0) }
-    if (patch.paused !== undefined) { sets.push('paused=?'); values.push(patch.paused ? 1 : 0) }
-    if (patch.autonomyPaused !== undefined) {
-      sets.push('autonomy_paused=?'); values.push(patch.autonomyPaused ? 1 : 0)
-    }
-    if (!sets.length) return
-    sets.push('updated_at=?'); values.push(now(), conversationId)
     await this.db.write(async db => {
+      const current = (await rows(db, 'SELECT * FROM conversations WHERE id=?', [conversationId]))[0]
+      if (!current) throw new Error('会话不存在')
+      if (patch.title !== undefined && (!patch.title.trim() || patch.title.trim().length > 50)) throw new Error('群聊名称需为 1–50 个字符')
+      if (patch.topic !== undefined && patch.topic.trim().length > 4000) throw new Error('聊天话题最多 4,000 个字符')
+      if (patch.announcement !== undefined && (current.kind !== 'group' || patch.announcement.trim().length > 2000)) throw new Error('普通群聊才能发布群公告，最多 2,000 个字符')
+      const sets: string[] = [], values: unknown[] = [], notices: string[] = []
+      let semantic = false
+      for (const field of ['title', 'topic', 'announcement'] as const) {
+        const value = patch[field]?.trim()
+        if (value === undefined || value === text(current[field])) continue
+        sets.push(`${field}=?`); values.push(value); semantic = true
+        if (field === 'announcement') { sets.push('announcement_updated_at=?'); values.push(now()) }
+        if (current.kind === 'group' && field === 'title') notices.push(`你将群聊名称修改为「${value}」`)
+        if (current.kind === 'group' && field === 'announcement') notices.push(value ? '你发布了新的群公告' : '你清空了群公告')
+      }
+      for (const [field, column] of [['pinned', 'pinned'], ['muted', 'muted'], ['hidden', 'hidden'], ['paused', 'paused'], ['autonomyPaused', 'autonomy_paused']] as const) {
+        if (patch[field] === undefined || Boolean(patch[field]) === bool(current[column])) continue
+        sets.push(`${column}=?`); values.push(patch[field] ? 1 : 0)
+      }
+      if (!sets.length) return
+      if (semantic) sets.push('content_revision=content_revision+1', 'cancel_epoch=cancel_epoch+1')
+      sets.push('updated_at=?'); values.push(now(), conversationId)
       await db.run(`UPDATE conversations SET ${sets.join(',')} WHERE id=?`, values)
+      if (semantic) await this.retireConversationWork(db, conversationId, '会话资料已更新')
+      if (notices.length) await this.insertConversationNotice(db, conversationId, notices.join('；'))
       if (patch.autonomyPaused === false) await db.run(`UPDATE inbox_events SET status='pending',reason='恢复自主互动',updated_at=?
         WHERE conversation_id=? AND status='deferred' AND reason='自主互动已暂停'`, [now(), conversationId])
     })
+  }
+
+  private async retireConversationWork(db: SQLiteDBConnection, conversationId: string, reason: string): Promise<void> {
+    await db.run("UPDATE retry_jobs SET status='cancelled',updated_at=? WHERE conversation_id=? AND status IN ('pending','dispatched','dormant')", [now(), conversationId])
+    await db.run("UPDATE inbox_events SET status='cancelled',reason=?,updated_at=? WHERE conversation_id=? AND status IN ('pending','claimed','deferred')", [reason, now(), conversationId])
+    await db.run("UPDATE runs SET status='cancelled',phase='cancelled',reason=?,updated_at=?,ended_at=? WHERE conversation_id=? AND status NOT IN ('completed','skipped','cancelled')", [reason, now(), now(), conversationId])
+    await db.run('UPDATE summaries SET valid=0 WHERE conversation_id=?', [conversationId])
+  }
+
+  private async insertConversationNotice(db: SQLiteDBConnection, conversationId: string, body: string): Promise<void> {
+    const current = (await rows(db, 'SELECT next_sequence FROM conversations WHERE id=?', [conversationId]))[0]
+    await db.run(`INSERT INTO messages(id,conversation_id,author_id,author_name,author_kind,body,sequence,request_id,created_at)
+      VALUES (?,?,?,'系统','system',?,?,?,?)`, [id(), conversationId, localUserId, body, num(current.next_sequence), id(), now()])
+    await db.run('UPDATE conversations SET next_sequence=next_sequence+1 WHERE id=?', [conversationId])
   }
 
   async clearConversation(conversationId: string): Promise<void> {
@@ -2072,14 +2359,14 @@ export class Repository {
       const anchor = [...prefix].reverse().find(row => !row.deleted)
       if (!anchor) throw new Error('开场白之前没有可重新生成的对话，请先发一条消息')
       const id = crypto.randomUUID(), timestamp = now(), ids = new Map(prefix.map(row => [text(row.id), crypto.randomUUID()]))
-      await db.run(`INSERT INTO conversations(id,kind,title,topic,origin_conversation_id,next_sequence,branch_sequence,autonomy_paused,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,1,?,?)`, [id, source.kind, `${source.title} · 重新生成`, source.topic, source.id, num(target.sequence), num(target.sequence), timestamp, timestamp])
+      await db.run(`INSERT INTO conversations(id,kind,title,topic,announcement,announcement_updated_at,origin_conversation_id,next_sequence,branch_sequence,autonomy_paused,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,1,?,?)`, [id, source.kind, `${source.title} · 重新生成`, source.topic, source.announcement ?? '', source.announcementUpdatedAt ?? 0, source.id, num(target.sequence), num(target.sequence), timestamp, timestamp])
       await db.run(`INSERT INTO conversation_members(conversation_id,actor_id,ordinal,joined_sequence,left_sequence)
         SELECT ?,actor_id,ordinal,joined_sequence,left_sequence FROM conversation_members WHERE conversation_id=?`, [id, source.id])
       for (const row of prefix) {
-        await db.run(`INSERT INTO messages(id,conversation_id,author_id,author_name,author_kind,body,sequence,quoted_id,request_id,deleted,created_at,media_id,recalled,edited_at,edit_history)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [ids.get(text(row.id)),id,row.author_id,row.author_name,row.author_kind,row.body,row.sequence,
-          ids.get(text(row.quoted_id)) ?? null,crypto.randomUUID(),row.deleted,row.created_at,row.media_id ?? null,row.recalled,row.edited_at,row.edit_history])
+        await db.run(`INSERT INTO messages(id,conversation_id,author_id,author_name,author_kind,body,sequence,quoted_id,request_id,deleted,created_at,media_id,recalled,edited_at,edit_history,sticker)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [ids.get(text(row.id)),id,row.author_id,row.author_name,row.author_kind,row.body,row.sequence,
+          ids.get(text(row.quoted_id)) ?? null,crypto.randomUUID(),row.deleted,row.created_at,row.media_id ?? null,row.recalled,row.edited_at,row.edit_history,row.sticker ?? 0])
       }
       for (const [oldId, newId] of ids) {
         await db.run(`INSERT INTO message_mentions(message_id,target_actor_id)
@@ -2609,7 +2896,7 @@ export class Repository {
     agentId: string
     providerId: string
     modelId: string
-    purpose: 'main' | 'triage' | 'summary'
+    purpose: ModelCallRecord['purpose']
     status: string
     inputTokens: number | null
     outputTokens: number | null
@@ -2903,6 +3190,13 @@ export class Repository {
       if ((await rows(db,`SELECT id FROM messages WHERE deleted=0 AND media_id IS NOT NULL AND NOT EXISTS
         (SELECT 1 FROM media_assets a WHERE a.id=messages.media_id AND a.status='ready')`)).length) throw new Error('备份缺少媒体')
       await db.run("UPDATE media_assets SET status='failed',error='生成中断，请手动重试' WHERE status='pending'")
+      await db.run("UPDATE stickers SET analysis_status='failed',analysis_token='',analysis_error='识别中断，请手动重试' WHERE analysis_status='analyzing'")
+      const recognition = (await rows(db, "SELECT value FROM app_settings WHERE key='sticker.recognition'"))[0]
+      if (recognition) {
+        let settings = { ...defaultStickerRecognitionSettings }
+        try { settings = { ...settings, ...JSON.parse(text(recognition.value)) } } catch { /* Reset invalid imported consent. */ }
+        await db.run("UPDATE app_settings SET value=? WHERE key='sticker.recognition'", [JSON.stringify({ ...settings, enabled: false, consentedOrigin: '' })])
+      }
       await db.run(`UPDATE summaries SET valid=0 WHERE start_sequence<1 OR through_sequence<start_sequence
         OR NOT EXISTS(SELECT 1 FROM conversations c JOIN conversation_members m ON m.conversation_id=c.id
           WHERE c.id=summaries.conversation_id AND c.content_revision=summaries.content_revision
@@ -3032,6 +3326,7 @@ function conversation(
   return {
     id: text(row.id), kind: text(row.kind) as ConversationKind,
     title: text(row.title), topic: text(row.topic), members, memberNames,
+    announcement: text(row.announcement), announcementUpdatedAt: num(row.announcement_updated_at),
     originConversationId: row.origin_conversation_id ? text(row.origin_conversation_id) : null,
     pinned: bool(row.pinned), muted: bool(row.muted), hidden: bool(row.hidden),
     paused: bool(row.paused), autonomyPaused: bool(row.autonomy_paused),
@@ -3049,6 +3344,15 @@ function editHistory(raw: unknown): { body: string; at: number }[] {
   } catch { return [] }
 }
 
+function stickerFromRow(row: Row): Sticker {
+  let analysis: StickerMeaning | null = null
+  try { if (row.analysis_status === 'ready') analysis = parseStickerMeaning(text(row.analysis_json)) } catch { /* Old or corrupt cache is not model-readable. */ }
+  const status = text(row.analysis_status, 'pending') as Sticker['analysisStatus']
+  return { id: text(row.id), name: text(row.name), dataUrl: text(row.data_url), createdAt: num(row.created_at),
+    contentHash: text(row.content_hash), analysisStatus: status === 'ready' && !analysis ? 'failed' : status,
+    analysis, analysisError: text(row.analysis_error), analysisToken: text(row.analysis_token) }
+}
+
 function message(row: Row): Message {
   return {
     id: text(row.id), conversationId: text(row.conversation_id),
@@ -3056,8 +3360,16 @@ function message(row: Row): Message {
     authorKind: text(row.author_kind) as Message['authorKind'], body: text(row.body),
     sequence: num(row.sequence), quotedId: row.quoted_id ? text(row.quoted_id) : null,
     recalled: bool(row.recalled), editedAt: num(row.edited_at), editHistory: editHistory(row.edit_history),
-    mentions: [], createdAt: num(row.created_at), deleted: bool(row.deleted), reactions: [], mediaId: row.media_id ? text(row.media_id) : null
+    mentions: [], createdAt: num(row.created_at), deleted: bool(row.deleted), reactions: [], mediaId: row.media_id ? text(row.media_id) : null,
+    sticker: bool(row.sticker)
   }
+}
+
+function agentMessage(row: Row): Message {
+  const result = message(row)
+  const prompt = text(row.sticker_prompt)
+  if (!result.recalled && prompt.startsWith('表情包：') && !result.body.includes(prompt)) result.body += `\n[所附图片的自动识别信息，仅作参考] ${prompt}`
+  return result
 }
 
 function memory(row: Row): Memory {

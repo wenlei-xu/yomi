@@ -23,6 +23,7 @@ function fixture(){
     execute:async(q)=>sql.exec(q),isTransactionActive:async()=>({result:false}),
     beginTransaction:async()=>sql.exec('BEGIN'),commitTransaction:async()=>sql.exec('COMMIT'),rollbackTransaction:async()=>sql.exec('ROLLBACK')
   }
+  db.persistWebStore=async()=>{assert.equal(sql.isTransaction,false)}
   return {sql,db,repo:new Repository(db)}
 }
 async function check(name,fn){await fn();passed.push(name);console.log('PASS '+name)}

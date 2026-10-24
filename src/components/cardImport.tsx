@@ -36,7 +36,7 @@ export function OriginalCard({app,actorId,notify}:{app:AppApi;actorId:string;not
   return <details className="settings-card"><summary>酒馆角色卡 · 原始资料已保留</summary>
     {source.warnings.map((w,i)=><p className="hint" key={i}>{w}</p>)}
     <p className="hint">原卡导出包含导入时的全部字段。你在 Yomi 的资料修改包含在“导出角色”中。</p>
-    <button onClick={()=>void app.exportOriginalCard(actorId).then(name=>notify({text:'已导出：'+name,tone:'ok'}),e=>notify({text:errorText(e),tone:'error'}))}>导出原始角色卡</button>
+    <button className="btn-quiet" type="button" onClick={()=>void app.exportOriginalCard(actorId).then(name=>notify({text:'已导出：'+name,tone:'ok'}),e=>notify({text:errorText(e),tone:'error'}))}>导出原始角色卡</button>
   </details>
 }
 

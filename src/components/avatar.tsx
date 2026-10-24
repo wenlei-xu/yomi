@@ -23,6 +23,7 @@ function toneFor(value: string): AvatarTone {
 export function Avatar({
   actor,
   name,
+  avatarData,
   size = 48,
   showStatus = true,
   status,
@@ -31,6 +32,7 @@ export function Avatar({
 }: {
   actor?: Actor | null
   name?: string
+  avatarData?: string
   size?: number
   showStatus?: boolean
   status?: string
@@ -38,18 +40,19 @@ export function Avatar({
   className?: string
 }) {
   const displayName = actor?.name || name || 'Y'
+  const imageData = avatarData ?? actor?.avatarData ?? ''
   const tone = toneFor(actor?.id || displayName)
   const dotSize = Math.max(9, Math.round(size * 0.24))
   const style: CSSProperties = {
     width: size,
     height: size,
-    background: actor?.avatarData ? 'transparent' : (actor?.color || tone.background),
+    background: imageData ? 'transparent' : (actor?.color || tone.background),
     fontSize: Math.round(size * 0.36)
   }
   return (
     <span className={`avatar-round ${className}`} style={style} aria-label={displayName}>
-      {actor?.avatarData
-        ? <img src={actor.avatarData} alt="" />
+      {imageData
+        ? <img src={imageData} alt="" />
         : <span>{displayName.trim().slice(0, 1).toUpperCase()}</span>}
       {showStatus && (
         <i

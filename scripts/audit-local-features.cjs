@@ -30,6 +30,7 @@ Database.prototype.open = async function () {
   if (this.initializeSchema) { await this.migrateExistingTables(); await conn.execute(schema) }
 }
 Database.prototype.close = async function () { this.db = null }
+Database.prototype.persistWebStore = async function () { assert.equal(connections.get(this.databaseName).sql.isTransaction, false) }
 Database.prototype.adopt = async function (candidate) { this.name = candidate.name; this.db = candidate.db; candidate.db = null }
 Database.exists = async name => connections.has(name)
 Database.remove = async name => { connections.get(name)?.sql.close(); connections.delete(name) }

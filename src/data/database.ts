@@ -82,6 +82,7 @@ export class Database {
       `UPDATE providers SET credential_ref='', credential_state='missing'
        WHERE credential_ref<>'' OR credential_state<>'missing'`, [], false)
     await this.db.query('PRAGMA foreign_keys=ON')
+    await this.persistWebStore()
   }
 
   async checkIntegrity(): Promise<void> {
@@ -103,7 +104,10 @@ export class Database {
   }
 
   async compact(): Promise<void> {
-    await this.read(async db => { await db.execute('VACUUM;', false) })
+    await this.read(async db => {
+      await db.execute('VACUUM;', false)
+      await this.persistWebStore()
+    })
   }
 
   /** Swap the handle while keeping the Repository's Database object stable. */
@@ -154,6 +158,7 @@ export class Database {
         allow_group: 'INTEGER NOT NULL DEFAULT 1'
       },
       conversations: {
+        announcement: "TEXT NOT NULL DEFAULT ''", announcement_updated_at: 'INTEGER NOT NULL DEFAULT 0',
         branch_sequence: 'INTEGER NOT NULL DEFAULT 0',
         origin_conversation_id: 'TEXT',
         content_revision: 'INTEGER NOT NULL DEFAULT 1',
@@ -166,7 +171,10 @@ export class Database {
         left_sequence: 'INTEGER'
       },
       user_reads: { updated_at: 'INTEGER NOT NULL DEFAULT 0' },
-      messages: { recalled: 'INTEGER NOT NULL DEFAULT 0', edited_at: 'INTEGER NOT NULL DEFAULT 0', edit_history: "TEXT NOT NULL DEFAULT '[]'", activity_id: 'TEXT', origin_run_id: 'TEXT', media_id: 'TEXT' },
+      messages: { recalled: 'INTEGER NOT NULL DEFAULT 0', edited_at: 'INTEGER NOT NULL DEFAULT 0', edit_history: "TEXT NOT NULL DEFAULT '[]'", activity_id: 'TEXT', origin_run_id: 'TEXT', media_id: 'TEXT', sticker: 'INTEGER NOT NULL DEFAULT 0' },
+      stickers: { content_hash: "TEXT NOT NULL DEFAULT ''", analysis_status: "TEXT NOT NULL DEFAULT 'pending'",
+        analysis_json: "TEXT NOT NULL DEFAULT ''", analysis_error: "TEXT NOT NULL DEFAULT ''",
+        analysis_token: "TEXT NOT NULL DEFAULT ''", analysis_model: "TEXT NOT NULL DEFAULT ''" },
       lorebook_entries: { secondary_keywords: "TEXT NOT NULL DEFAULT '[]'", selective: 'INTEGER NOT NULL DEFAULT 0',
         case_sensitive: 'INTEGER NOT NULL DEFAULT 0', source_json: "TEXT NOT NULL DEFAULT ''" },
       inbox_events: { reason: "TEXT NOT NULL DEFAULT ''", updated_at: 'INTEGER NOT NULL DEFAULT 0', retry_run_id: 'TEXT' },
@@ -198,15 +206,22 @@ export class Database {
       if (!this.db) throw new Error('数据库尚未打开')
       await this.rollbackIfActive()
       await this.db.beginTransaction()
+      let result: T
       try {
-        const result = await work(transactionConnection(this.db))
+        result = await work(transactionConnection(this.db))
         await this.db.commitTransaction()
-        return result
       } catch (error) {
         try { await this.db.rollbackTransaction() } catch { /* preserve the original failure */ }
         throw error
       }
+      // jeep-sqlite commits SQL in memory; IndexedDB needs an explicit flush.
+      await this.persistWebStore()
+      return result
     })
+  }
+
+  private async persistWebStore(): Promise<void> {
+    if (Capacitor.getPlatform() === 'web') await sqliteOwner.saveToStore(this.name)
   }
 
   private enqueue<T>(work: () => Promise<T>): Promise<T> {

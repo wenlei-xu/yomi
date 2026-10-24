@@ -1,10 +1,24 @@
 export type UUID = string
 
 export type ProviderProtocol = 'responses' | 'chat-completions'
+export type ProviderChannelKind = 'text' | 'image' | 'speech'
 export type ModelPurpose = 'main' | 'triage' | 'summary'
 export type CredentialState = 'stored' | 'missing'
 export type ActorKind = 'human' | 'agent'
 export type ConversationKind = 'direct' | 'group' | 'agent_direct' | 'agent_group'
+
+export interface ProviderModel {
+  id: string
+  name: string
+  owner: string
+}
+
+export interface ModelTestResult {
+  message: string
+  latencyMs: number
+  kind: 'image' | 'speech'
+  dataUrl: string
+}
 export type RunStatus = 'queued' | 'triaging' | 'running' | 'completed' | 'skipped' | 'deferred' | 'failed' | 'cancelled' | 'interrupted'
 export type InboxStatus = 'pending' | 'claimed' | 'handled' | 'skipped' | 'cancelled' | 'deferred'
 
@@ -50,11 +64,20 @@ export interface Actor {
   updatedAt: number
 }
 
+export type AgentStatus = 'active' | 'disabled' | 'archived'
+
+export interface AgentSettingsUpdate {
+  privateMemo?: string
+  modelBindings?: ModelBinding[]
+}
+
 export interface Conversation {
   id: UUID
   kind: ConversationKind
   title: string
   topic: string
+  announcement?: string
+  announcementUpdatedAt?: number
   members: string[]
   memberNames: string[]
   originConversationId: string | null
@@ -94,6 +117,7 @@ export interface Message {
   commandReplayed?: boolean
   retryRunId?: string
   mediaId?: string | null
+  sticker?: boolean
 }
 
 export interface MessageReaction {
@@ -238,6 +262,30 @@ export interface Sticker {
   name: string
   dataUrl: string
   createdAt: number
+  contentHash?: string
+  analysisStatus?: 'pending' | 'analyzing' | 'ready' | 'failed'
+  analysis?: StickerMeaning | null
+  analysisError?: string
+  analysisToken?: string
+}
+
+export interface StickerMeaning {
+  description: string
+  text: string
+  tags: string[]
+  situations: string[]
+}
+
+export interface StickerRecognitionSettings {
+  enabled: boolean
+  providerId: string
+  modelId: string
+  consentedOrigin: string
+  revision: number
+}
+
+export const defaultStickerRecognitionSettings: StickerRecognitionSettings = {
+  enabled: false, providerId: '', modelId: '', consentedOrigin: '', revision: 0
 }
 
 export interface MediaSettings {
@@ -279,7 +327,7 @@ export interface ModelCallRecord {
   agentId: string
   providerId: string
   modelId: string
-  purpose: ModelPurpose
+  purpose: ModelPurpose | 'sticker-analysis'
   status: string
   inputTokens: number | null
   outputTokens: number | null
@@ -336,7 +384,7 @@ export interface ModelRequest {
 
 export type ModelInputItem =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string; images?: string[] }
   | { role: 'assistant'; content: string }
   | { role: 'assistant'; toolCalls: ToolCall[] }
   | { role: 'tool'; toolCallId: string; name: string; content: string }

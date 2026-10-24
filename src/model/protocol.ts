@@ -15,7 +15,8 @@ export class ModelProtocolError extends Error {
 export async function callModel(provider: Provider, modelId: string, request: ModelRequest, signal: AbortSignal, onProgress?: (text: string) => void, onFallback?: () => Promise<void>): Promise<ModelResult> {
   const url = provider.protocol === 'responses' ? `${provider.baseUrl.replace(/\/$/, '')}/responses` : `${provider.baseUrl.replace(/\/$/, '')}/chat/completions`
   const body = provider.protocol === 'responses'
-    ? { model: modelId, instructions: request.instructions, input: responsesInput(request.input), tools: request.tools?.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters })), max_output_tokens: request.maxOutputTokens }
+    ? { model: modelId, instructions: request.instructions, input: responsesInput(request.input), tools: request.tools?.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters })), max_output_tokens: request.maxOutputTokens,
+      ...(request.input.some(item => item.role === 'user' && item.images?.length) ? { store: false } : {}) }
     : { model: modelId, messages: chatMessages(request), tools: request.tools?.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })), max_tokens: request.maxOutputTokens }
   let gate = providerRequests.get(provider.id)
   if (!gate) { gate = new RequestGate(2); providerRequests.set(provider.id, gate) }
@@ -65,6 +66,9 @@ function responsesInput(items: ModelInputItem[]): unknown[] {
   return items.map(item => {
     if (item.role === 'tool') return { type: 'function_call_output', call_id: item.toolCallId, output: item.content }
     if (item.role === 'assistant' && 'toolCalls' in item) return item.toolCalls.map(call => ({ type: 'function_call', call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) }))
+    if (item.role === 'user' && item.images?.length) return { role: 'user', content: [
+      { type: 'input_text', text: item.content }, ...item.images.map(image_url => ({ type: 'input_image', image_url, detail: 'auto' }))
+    ] }
     return { role: item.role === 'assistant' ? 'assistant' : item.role, content: 'content' in item ? item.content : '' }
   }).flat()
 }
@@ -75,6 +79,9 @@ function chatMessages(request: ModelRequest): unknown[] {
     if (item.role === 'assistant' && 'toolCalls' in item) {
       return { role: 'assistant', content: '', tool_calls: item.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) }
     }
+    if (item.role === 'user' && item.images?.length) return { role: 'user', content: [
+      { type: 'text', text: item.content }, ...item.images.map(url => ({ type: 'image_url', image_url: { url, detail: 'auto' } }))
+    ] }
     return { role: item.role, content: 'content' in item ? item.content : '' }
   })]
 }

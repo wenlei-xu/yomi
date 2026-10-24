@@ -5,6 +5,8 @@ import { createRoot } from 'react-dom/client'
 import { App as CapacitorApp } from '@capacitor/app'
 import { createApp, type AppApi, type RecoveryInfo } from './app/bootstrap'
 import { Avatar, AvatarStack, conversationAvatar } from './components/avatar'
+import { AgentEditor } from './components/agentEditor'
+import { readImageThumbnail } from './components/avatarImage'
 import {
   AgentsIcon,
   AtIcon,
@@ -16,17 +18,29 @@ import {
   PlusIcon,
   SearchIcon,
   SendIcon,
+  SmileIcon,
+  KeyboardIcon,
+  SettingsIcon,
+  MemoryIcon,
+  UploadIcon,
+  RefreshIcon,
+  ChevronRightIcon,
   StopIcon,
   WhisperIcon
 } from './components/icons'
 import { MessageSearch } from './components/messageSearch'
 import { ConversationMemoryPanel } from './components/conversationMemory'
-import { MarkdownText } from './components/markdown'
-import { LorebookSheet,WorldBookBindings,ActorWorldBookBindings } from './components/lorebooks'
-import { MediaSheet,MediaSettingsPanel,MediaAttachment,MessageSpeech } from './components/media'
-import { CardImport,OriginalCard,Greetings } from './components/cardImport'
+import { MarkdownText, EmoticonText } from './components/markdown'
+import { LorebookSheet,WorldBookBindings } from './components/lorebooks'
+import { MediaSheet,MediaAttachment,MessageSpeech } from './components/media'
+import { ChatExpressionPicker } from './components/chatExpressions'
+import { ChatInput, type ChatInputHandle } from './components/chatInput'
+import { ModelSettings } from './components/modelSettings'
+import { GroupInfo } from './components/groupInfo'
+import { CardImport,Greetings } from './components/cardImport'
 import type {
   Actor,
+  AgentStatus,
   Conversation,
   ConversationNote,
   Lorebook,
@@ -38,7 +52,6 @@ import type {
   ModelCallRecord,
   Provider,
   ProactiveRule,
-  ProviderProtocol,
   RuntimeIssue,
   UsageSummary,
   StorageStats,
@@ -48,6 +61,10 @@ import type {
 import { backupModules, moduleIds, withDependencies, type BackupModule, type BackupPreview } from './data/modularBackup'
 import './styles.css'
 import './components/roleplay.css'
+import './components/settings.css'
+import './components/agents.css'
+import './components/expressions.css'
+import './components/groupInfo.css'
 
 type Tab = 'messages' | 'whispers' | 'agents' | 'me'
 type Notice = { text: string; tone: 'ok' | 'error' } | null
@@ -270,14 +287,14 @@ function Messages(props: {
             <span>{issue.conversationTitle} · {issue.reason || '应用在生成期间离开前台'}</span>
           </div>
           <div className="actions">
-            <button onClick={() => openConversation(issue.conversationId)}>打开</button>
-            <button onClick={() => void app.retry(issue.conversationId)}>重试</button>
-            <button className="ghost" onClick={() => void app.ignoreRecovery(issue.conversationId)}>略过</button>
+            <button className="btn-secondary" onClick={() => openConversation(issue.conversationId)}>打开</button>
+            <button className="btn-primary" onClick={() => void app.retry(issue.conversationId)}>重试</button>
+            <button className="btn-quiet" onClick={() => void app.ignoreRecovery(issue.conversationId)}>略过</button>
           </div>
         </div>)}
       </div>}
       {filtered.length === 0
-        ? <Empty text="还没有聊天。先创建角色，再打开单聊或建群。" action="去创建角色" onAction={goToAgents} />
+        ? <Empty text="还没有聊天。先创建角色，再打开单聊或建群。" action="去创建角色" onAction={goToAgents} icon={<ChatIcon />} />
         : <div className="conversation-rows scroll-region">{filtered.map(item => {
           const visual = conversationAvatar(item, actors)
           return <button className="row conversation-row" key={item.id} onClick={() => openConversation(item.id)}>
@@ -286,13 +303,12 @@ function Messages(props: {
             : <AvatarStack actors={actors.filter(actor => item.members.includes(actor.id))} names={visual.names} size={48} />}
           <div className="row-copy">
             <strong>{item.title} {item.muted && <span className="muted-mark">静音</span>}</strong>
-            <span>{item.lastMessage || '暂无消息'}</span>
+            <span><EmoticonText text={item.lastMessage || '暂无消息'}/></span>
           </div>
           <div className="row-meta">
-            {item.paused && <small>已停止</small>}
-            {item.hidden && <small>已隐藏</small>}
+            <small className="row-time">{formatRelative(item.updatedAt)}</small>
             {item.unread > 0 && <i>{item.unread > 99 ? '99+' : item.unread}</i>}
-            {!item.paused && !item.hidden && item.unread === 0 && <small>{formatRelative(item.updatedAt)}</small>}
+            {(item.paused || item.hidden) && <span className="row-state">{item.paused ? '已停止' : '已隐藏'}</span>}
           </div>
         </button>
         })}</div>}
@@ -317,6 +333,7 @@ function Chat(props: {
   const [quoted, setQuoted] = useState<Message | null>(null)
   const [busy, setBusy] = useState(false)
   const [showInfo, setShowInfo] = useState(false)
+  const [groupInfoPage, setGroupInfoPage] = useState<'home' | 'announcement'>('home')
   const [showMore, setShowMore] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [hasOlder, setHasOlder] = useState(false)
@@ -332,12 +349,19 @@ function Chat(props: {
   const [jumpId, setJumpId] = useState<string | null>(null)
   const targetMessageId = jumpId ?? requestedTarget
   const [chatMediaActor,setChatMediaActor]=useState<Actor|null>(null)
+  const [editingChatAgent, setEditingChatAgent] = useState<Actor | null>(null)
+  const [agentStatusBusy, setAgentStatusBusy] = useState(false)
+  const [expressionOpen,setExpressionOpen]=useState(false)
+  const [messageMenuId, setMessageMenuId] = useState<string | null>(null)
+  const [messageReactionId, setMessageReactionId] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const targetRef = useRef<HTMLElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const chatInputRef = useRef<ChatInputHandle>(null)
   const [draftReadyFor, setDraftReadyFor] = useState<string | null>(null)
   const pendingSend = useRef<{ fingerprint: string; id: string } | null>(null)
   const sendingRef = useRef(false)
+
+  useEffect(() => { setExpressionOpen(false); setMessageMenuId(null); setMessageReactionId(null) }, [conversationId, readOnly])
 
   useEffect(() => {
     let active = true
@@ -399,9 +423,11 @@ function Chat(props: {
   }, [app, conversationId, draft, quoted, readOnly, draftReadyFor, busy, notify])
 
   if (!conversation) return <div className="center">正在读取聊天…</div>
+  const directAgent = conversation.kind === 'direct' ? members[0] : undefined
+  const directUnavailable = conversation.kind === 'direct' && (!directAgent || !directAgent.enabled || directAgent.archived)
 
   const send = async () => {
-    if (!draft.trim() || sendingRef.current || readOnly || draftReadyFor !== conversationId) return
+    if (!draft.trim() || sendingRef.current || readOnly || directUnavailable || draftReadyFor !== conversationId) return
     sendingRef.current = true
     setBusy(true)
     const sentBody = draft
@@ -416,6 +442,17 @@ function Chat(props: {
     } catch (reason) {
       notify({ text: errorText(reason), tone: 'error' })
     } finally { sendingRef.current = false; setBusy(false) }
+  }
+
+  const insertEmoji = (code: string) => {
+    chatInputRef.current?.insert(code)
+    setMentionQuery(null)
+  }
+
+  const sendSticker = async (sticker: Sticker, commandId: string) => {
+    if (directUnavailable) throw new Error('请先启用角色再发送消息')
+    if (conversation.paused || readOnly) throw new Error('请先恢复聊天')
+    await app.sendSticker(conversationId, sticker.id, commandId)
   }
 
   const loadOlder = async () => {
@@ -447,17 +484,19 @@ function Chat(props: {
   const waiting = app.runtime.snapshot().waiting.filter(job => job.conversationId === conversationId)
   const mentionMatches = mentionQuery === null
     ? []
-    : members.filter(actor => actor.name.toLowerCase().includes(mentionQuery.toLowerCase()))
+    : members.filter(actor => actor.enabled && !actor.archived && actor.name.toLowerCase().includes(mentionQuery.toLowerCase()))
 
   return <section className="chat">
     <header className="chat-header">
       <button className="icon-button" onClick={close} aria-label="返回"><BackIcon /></button>
-      <button className="title-button" onClick={() => setShowInfo(true)}>
+      {directAgent && <button className="chat-role-avatar" aria-label={`编辑角色 ${directAgent.name}`} onClick={() => setEditingChatAgent(directAgent)}>
+        <Avatar actor={directAgent} size={36} showStatus={false} /></button>}
+      <button className="title-button" onClick={() => { setGroupInfoPage('home'); setShowInfo(true) }}>
         <strong>{conversation.title}</strong>
         <span>
           {readOnly ? '角色私聊 · 只读旁观' : conversation.kind === 'group'
-            ? `${members.length} 位角色 · ${running.length ? '正在回应' : conversation.paused ? '已停止' : '在线'}`
-            : conversation.paused ? '已停止' : '角色在线'}
+            ? `${conversation.members.length} 位成员 · ${running.length ? '正在回应' : conversation.paused ? '已停止' : '在线'}`
+            : !directAgent ? '角色已删除 · 历史保留' : directAgent.archived ? '角色已归档' : !directAgent.enabled ? '角色已停用' : conversation.paused ? '已停止' : '角色在线'}
         </span>
       </button>
       {running.length > 0 || waiting.length > 0
@@ -465,14 +504,29 @@ function Chat(props: {
         : conversation.paused
           ? <button className="header-text-action" onClick={() => app.resume(conversationId)}>继续</button>
           : null}
-      <button className="icon-button" onClick={() => setShowMore(true)} aria-label="更多"><MoreIcon /></button>
+      <button className="icon-button" onClick={() => {
+        if (conversation.kind === 'group') { setGroupInfoPage('home'); setShowInfo(true) }
+        else setShowMore(true)
+      }} aria-label="更多"><MoreIcon /></button>
     </header>
+    {conversation.kind === 'group' && conversation.announcement && <button type="button" className="group-announcement-banner" onClick={() => { setGroupInfoPage('announcement'); setShowInfo(true) }}>
+      <strong>群公告</strong><span>{conversation.announcement}</span><ChevronRightIcon/>
+    </button>}
     {readOnly && <div className="readonly-banner">角色间对话，你正在旁观。你不能在这里代任何角色发言。</div>}
+    {directUnavailable && <div className="status-banner agent-disabled-banner">
+      <span>{!directAgent ? '角色已删除，仍可查看历史消息。' : directAgent.archived ? '角色已归档，恢复并启用后可继续聊天。' : '角色已停用，聊天与记忆已保留。'}</span>
+      {directAgent && <button className="link" disabled={agentStatusBusy} onClick={async () => {
+        setAgentStatusBusy(true)
+        try { await app.setAgentStatus(directAgent.id, 'active'); notify({ text: '角色已启用，可以继续聊天', tone: 'ok' }) }
+        catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+        finally { setAgentStatusBusy(false) }
+      }}>{agentStatusBusy ? '处理中…' : directAgent.archived ? '恢复并启用' : '启用角色'}</button>}
+    </div>}
     {conversation.paused && <div className="status-banner">互动已停止；历史仍保留，点击“继续”才会重新判断。</div>}
     {running.length > 0 && <div className="typing-banner">
       <span className="typing-dots"><i /><i /><i /></span>
       <span>{running.map(run => members.find(actor => actor.id === run.agentId)?.name || '角色').join('、')} 正在思考</span>
-      <button onClick={() => setConfirmStop(true)}>停止</button>
+      <button className="btn-danger" onClick={() => setConfirmStop(true)}>停止</button>
     </div>}
     {waiting.length > 0 && running.length === 0 && <div className="status-banner" role="status">
       {waiting.some(job => job.kind === 'rate') ? '角色互动频率受限，稍后继续。' : '连接暂时不可用，稍后自动重试。'}
@@ -490,11 +544,12 @@ function Chat(props: {
       } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
       finally { setRefreshing(false) }
     }}>{refreshing ? '正在同步…' : '有新回复 · 刷新'}</button>}
-    <div className="messages" onClick={() => setMentionQuery(null)}>
+    <div className="messages" onClick={() => { setMentionQuery(null); setExpressionOpen(false); setMessageMenuId(null); setMessageReactionId(null); chatInputRef.current?.blur() }}>
       {hasOlder && <button className="load-older" onClick={() => void loadOlder()}>加载更早消息</button>}
       {messages.map(item => {
         const mine = item.authorId === 'local-user'
         const author = members.find(actor => actor.id === item.authorId)
+        const stickerMessage = !item.deleted && Boolean(item.mediaId) && (item.sticker || item.body.startsWith('表情包：'))
         if (item.authorKind === 'system') {
           return <article key={item.id} id={`message-${item.id}`} className="system-message">
             <div className="message-stack">
@@ -514,10 +569,10 @@ function Chat(props: {
           {!mine && <Avatar actor={author} name={item.authorName} size={30} showStatus={false} className="message-avatar" />}
           <div className="message-stack">
             <div className="message-meta">
-              <small>{mine ? '你' : item.authorName}</small>
-              <span>{formatClock(item.createdAt)}{item.editedAt && !item.recalled ? ' · 已编辑' : ''}</span>
+              <small>{mine ? '你' : author?.name ?? item.authorName}</small>
+              <span>{formatClock(item.createdAt)}{item.editedAt && !item.recalled ? ' · 已编辑' : ''}{item.recalled ? ' · 已撤回' : ''}</span>
             </div>
-            <div className="message-bubble">
+            <div className={'message-bubble' + (stickerMessage ? ' sticker-bubble' : '')}>
               {item.quotedId && <button
                 className="quote"
                 onClick={() => {
@@ -525,36 +580,60 @@ function Chat(props: {
                   if (target) document.getElementById(`message-${target.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
                   else if (item.quotedId) setJumpId(item.quotedId)
                 }}
-              >{messages.find(message => message.id === item.quotedId)?.body.slice(0, 100) ?? '引用的消息不可见'}</button>}
+              ><EmoticonText text={messages.find(message => message.id === item.quotedId)?.body.slice(0, 100) ?? '引用的消息不可见'}/></button>}
               {item.deleted
                 ? <p className="deleted-message">消息已删除</p>
-                : <MarkdownText text={item.body} />}
-              {!item.deleted && item.mediaId && <MediaAttachment app={app} assetId={item.mediaId}/>}
+                : item.recalled
+                  ? <p className="recalled-message">{mine ? '你撤回了一条消息' : `${author?.name ?? item.authorName}撤回了一条消息`}</p>
+                  : (!stickerMessage || !item.body.startsWith('表情包：')) && <MarkdownText text={item.body} />}
+              {!item.deleted && item.mediaId && <MediaAttachment app={app} assetId={item.mediaId} variant={stickerMessage ? 'sticker' : undefined} notify={notify}/>}
               {!item.deleted && item.authorKind==='agent' && !item.mediaId &&
                 <MessageSpeech app={app} message={item} version={version} notify={notify}/>}
             </div>
             {!item.deleted && !item.recalled && <div className="message-actions">
-              {!readOnly && <button className="link" onClick={() => {
+              {!readOnly && <button type="button" className="message-action-quick" aria-label={`回复 ${item.authorName}`} onClick={() => {
                 setQuoted(item)
-                requestAnimationFrame(() => textareaRef.current?.focus())
-              }}>引用</button>}
-              {!readOnly && ['❤️','👍','😂','😮','😢','🙏'].map(emoji => <button key={emoji} className="link" aria-label={`表情 ${emoji}`}
-                onClick={() => void app.react(item.id, emoji).catch(reason => notify({text:errorText(reason),tone:'error'}))}>{emoji}</button>)}
-              {!readOnly && <button className="link" onClick={() => { setEditor(item); setEditBody(item.body) }}>编辑</button>}
-              {!readOnly && mine && <button className="link" onClick={async () => {
-                if (!confirm('撤回这条消息？角色会看到撤回提示，原文不再提供给后续请求。')) return
-                try { await app.recallMessage(item.id) } catch(reason) { notify({text:errorText(reason),tone:'error'}) }
-              }}>撤回</button>}
-              {!readOnly && item.authorKind === 'agent' && openBranch && <button className="link" disabled={messageBusy} onClick={async () => {
-                if (!confirm('从这条回复之前新建分支并重新生成？原会话及后续消息会保留。')) return
-                setMessageBusy(true)
-                try { openBranch(await app.regenerateMessage(item.id)) } catch(reason) { notify({text:errorText(reason),tone:'error'}) }
-                finally { setMessageBusy(false) }
-              }}>重新生成</button>}
-              <button className="link" onClick={() => {
-                if (confirm('删除这条消息？引用和自动来源记忆将失效。')) void app.deleteMessage(item.id).catch(reason => notify({text:errorText(reason),tone:'error'}))
-              }}>删除</button>
-              {item.reactions.map(reaction => <span key={reaction.emoji}>{reaction.emoji}{reaction.actorIds.length}</span>)}
+                setMessageMenuId(null)
+                setMessageReactionId(null)
+                requestAnimationFrame(() => chatInputRef.current?.focus())
+              }}>回复</button>}
+              {!readOnly && <button type="button" className="message-action-quick message-action-react" aria-label={`给 ${item.authorName} 的消息添加表情`} aria-expanded={messageReactionId === item.id}
+                onClick={event => { event.stopPropagation(); setMessageReactionId(current => current === item.id ? null : item.id); setMessageMenuId(null) }}>表情</button>}
+              <button type="button" className="message-action-more" aria-label="更多消息操作" aria-expanded={messageMenuId === item.id}
+                onClick={event => { event.stopPropagation(); setMessageMenuId(current => current === item.id ? null : item.id); setMessageReactionId(null) }}><MoreIcon/></button>
+              {!!item.reactions.length && <div className="message-reactions" aria-label="消息表情">
+                {item.reactions.map(reaction => <button type="button" key={reaction.emoji} className={reaction.actorIds.includes('local-user') ? 'mine' : ''}
+                  aria-label={`${reaction.emoji} ${reaction.actorIds.length} 人，点击切换`} onClick={() => void app.react(item.id, reaction.emoji).catch(reason => notify({text:errorText(reason),tone:'error'}))}>
+                  {reaction.emoji}<small>{reaction.actorIds.length}</small></button>)}
+              </div>}
+              {messageReactionId === item.id && <div className="message-reaction-menu" role="group" aria-label="选择表情" onClick={event => event.stopPropagation()}>
+                <div className="message-emoji-row" aria-label="快速表情">
+                  {['❤️','👍','😂','😮','😢','🙏'].map(emoji => <button type="button" key={emoji} aria-label={`表情 ${emoji}`}
+                    onClick={() => { void app.react(item.id, emoji).catch(reason => notify({text:errorText(reason),tone:'error'})); setMessageReactionId(null) }}>{emoji}</button>)}
+                </div>
+              </div>}
+              {messageMenuId === item.id && <div className="message-action-menu" role="menu" aria-label="消息操作" onClick={event => event.stopPropagation()}>
+                {!readOnly && <button type="button" role="menuitem" onClick={() => {
+                  setQuoted(item); setMessageMenuId(null); setMessageReactionId(null); requestAnimationFrame(() => chatInputRef.current?.focus())
+                }}>引用回复</button>}
+                {!readOnly && <button type="button" role="menuitem" onClick={() => { setEditor(item); setEditBody(item.body); setMessageMenuId(null); setMessageReactionId(null) }}>编辑消息</button>}
+                {!readOnly && mine && <button type="button" role="menuitem" onClick={async () => {
+                  setMessageMenuId(null); setMessageReactionId(null)
+                  if (!confirm('撤回这条消息？角色会看到撤回提示，原文不再提供给后续请求。')) return
+                  try { await app.recallMessage(item.id) } catch(reason) { notify({text:errorText(reason),tone:'error'}) }
+                }}>撤回消息</button>}
+                {!readOnly && item.authorKind === 'agent' && openBranch && <button type="button" role="menuitem" disabled={messageBusy} onClick={async () => {
+                  setMessageMenuId(null); setMessageReactionId(null)
+                  if (!confirm('从这条回复之前新建分支并重新生成？原会话及后续消息会保留。')) return
+                  setMessageBusy(true)
+                  try { openBranch(await app.regenerateMessage(item.id)) } catch(reason) { notify({text:errorText(reason),tone:'error'}) }
+                  finally { setMessageBusy(false) }
+                }}>重新生成</button>}
+                <button type="button" role="menuitem" className="danger" onClick={() => {
+                  setMessageMenuId(null); setMessageReactionId(null)
+                  if (confirm('删除这条消息？引用和自动来源记忆将失效。')) void app.deleteMessage(item.id).catch(reason => notify({text:errorText(reason),tone:'error'}))
+                }}>删除消息</button>
+              </div>}
             </div>}
           </div>
         </article>
@@ -570,7 +649,8 @@ function Chat(props: {
       <div ref={bottomRef} />
     </div>
     {chatMediaActor && <MediaSheet app={app} agent={chatMediaActor} conversationId={conversationId} notify={notify} close={()=>setChatMediaActor(null)}/>}
-    {!readOnly && <form onSubmit={event => { event.preventDefault(); void send() }}>
+    {editingChatAgent && <AgentEditor key={editingChatAgent.id} app={app} initial={editingChatAgent} close={() => setEditingChatAgent(null)} notify={notify} />}
+    {!readOnly && <form className={'chat-composer' + (expressionOpen ? ' expressions-open' : '')} onSubmit={event => { event.preventDefault(); void send() }}>
       {quoted && <div className="composer-quote"><span>回复 {quoted.authorName}：{quoted.body.slice(0, 80)}</span><button type="button" onClick={() => setQuoted(null)}>×</button></div>}
       {selectedMentions.length > 0 && <div className="mention-chips">
         {selectedMentions.map(actor => <button type="button" key={actor.id} onClick={() =>
@@ -584,7 +664,7 @@ function Chat(props: {
             setSelectedMentions(current => current.some(item => item.id === actor.id) ? current : [...current, actor])
             setDraft(current => current.replace(/(^|\s)@[^\s@]*$/, '$1'))
             setMentionQuery(null)
-            requestAnimationFrame(() => textareaRef.current?.focus())
+            requestAnimationFrame(() => chatInputRef.current?.focus())
           }}>
             <Avatar actor={actor} size={34} showStatus={false} />
             <span>{actor.name}</span>
@@ -592,55 +672,74 @@ function Chat(props: {
           : <div className="quiet-loading">没有匹配的角色</div>}
       </div>}
       <div className="composer-row">
-        <button className="composer-tool" type="button" disabled={!members.length || busy || conversation.paused} aria-label="图片、语音与表情包"
-          onClick={()=>setChatMediaActor(members[0])}><PlusIcon/></button>
         {conversation.kind === 'group' && <button
           className="composer-tool"
           type="button"
-          onClick={() => { setMentionQuery(''); textareaRef.current?.focus() }}
+          onClick={() => { setMentionQuery(''); chatInputRef.current?.focus() }}
           aria-label="点名角色"
         ><AtIcon /></button>}
-        <textarea
-          ref={textareaRef}
-          disabled={draftReadyFor !== conversationId}
+        <ChatInput
+          ref={chatInputRef}
+          disabled={directUnavailable || draftReadyFor !== conversationId}
           value={draft}
-          onChange={event => {
-            const value = event.target.value
+          onChange={value => {
             setDraft(value)
             if (conversation.kind === 'group') {
               const match = /(^|\s)@([^\s@]*)$/.exec(value)
               setMentionQuery(match ? match[2] : null)
             }
           }}
-          onKeyDown={event => {
-            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-              event.preventDefault(); void send()
-            }
-          }}
-          placeholder={conversation.kind === 'group' ? '发消息给群聊' : `发消息给 ${conversation.title}`}
-          rows={1}
+          onFocus={() => setExpressionOpen(false)}
+          onSend={() => void send()}
+          placeholder={directUnavailable ? '角色启用后可继续聊天' : conversation.kind === 'group' ? '发消息给群聊' : `发消息给 ${conversation.title}`}
         />
-        <button className="send-button" type="submit" disabled={busy || draftReadyFor !== conversationId || !draft.trim()} aria-label="发送">
+        <button className="composer-tool expression-toggle" type="button" disabled={directUnavailable || !members.length || busy || conversation.paused}
+          aria-label={expressionOpen ? '切换到键盘' : '打开表情'} aria-expanded={expressionOpen} onPointerDown={event => event.preventDefault()}
+          onClick={() => {
+            if (expressionOpen) { setExpressionOpen(false); chatInputRef.current?.focus() }
+            else { chatInputRef.current?.blur(); setMentionQuery(null); setExpressionOpen(true) }
+          }}>{expressionOpen ? <KeyboardIcon/> : <SmileIcon/>}</button>
+        {!draft.trim() && <button className="composer-tool" type="button" disabled={directUnavailable || !members.length || busy || conversation.paused} aria-label="图片与语音"
+          onClick={() => { setExpressionOpen(false); setChatMediaActor(members[0]) }}><PlusIcon/></button>}
+        {Boolean(draft.trim()) && <button className="send-button composer-send" type="submit" disabled={directUnavailable || busy || draftReadyFor !== conversationId} aria-label="发送" onPointerDown={event => event.preventDefault()}>
           {busy ? <span className="send-spinner" /> : <SendIcon />}
-        </button>
+        </button>}
       </div>
+      {expressionOpen && <ChatExpressionPicker app={app} version={version} disabled={directUnavailable || busy || conversation.paused || draftReadyFor !== conversationId}
+        hasDraft={!!draft} close={() => setExpressionOpen(false)} onEmoji={insertEmoji} onBackspace={() => chatInputRef.current?.backspace()}
+        onSticker={sendSticker} notify={notify} />}
     </form>}
-    {showInfo && <ConversationSheet
+    {showInfo && (conversation.kind === 'group' ? <GroupInfo
+      app={app} version={version} conversation={conversation} initialPage={groupInfoPage}
+      close={() => setShowInfo(false)} deleted={() => { setShowInfo(false); close() }}
+      search={() => { setShowInfo(false); setChatSearch(true) }}
+      editAgent={agent => { setShowInfo(false); setEditingChatAgent(agent) }}
+      renderAdvanced={(room, actors) => <>
+        <WorldBookBindings app={app} conversationId={room.id} notify={notify}/>
+        <ConversationNotes app={app} conversation={room} members={actors} notify={notify}/>
+        <ConversationMemoryPanel app={app} conversation={room} members={actors} notify={notify}/>
+        <ProactiveRules app={app} conversation={room} members={actors} notify={notify}/>
+      </>}
+      notify={notify}
+    /> : <ConversationSheet
       app={app}
+      version={version}
       conversation={conversation}
+      editAgent={agent => { setShowInfo(false); setEditingChatAgent(agent) }}
       close={() => setShowInfo(false)}
       notify={notify}
-    />}
+    />)}
     {showMore && <div className="sheet-backdrop" onClick={() => setShowMore(false)}>
       <div className="sheet menu-sheet action-sheet" onClick={event => event.stopPropagation()}>
         <div className="sheet-handle" />
         <h3>{conversation.title}</h3>
-        <button onClick={() => {setChatSearch(true);setShowMore(false)}}>搜索本会话</button>
-        <button onClick={async () => {
+        {directAgent && <button className="sheet-action" onClick={() => { setEditingChatAgent(directAgent); setShowMore(false) }}>编辑角色头像与资料</button>}
+        <button className="sheet-action" onClick={() => {setChatSearch(true);setShowMore(false)}}>搜索本会话</button>
+        <button className="sheet-action" onClick={async () => {
           try { notify({ text: `已导出：${await app.exportConversation(conversationId, 'markdown')}`, tone: 'ok' }) }
           catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
         }}>导出 Markdown</button>
-        <button onClick={async () => {
+        <button className="sheet-action" onClick={async () => {
           try { notify({ text: `已导出：${await app.exportConversation(conversationId, 'json')}`, tone: 'ok' }) }
           catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
         }}>导出 JSON</button>
@@ -661,7 +760,7 @@ function Chat(props: {
       </div>
     </div>}
     {chatSearch && <div className="sheet-backdrop" onClick={() => setChatSearch(false)}><div className="sheet" role="dialog" aria-modal="true" aria-label="搜索本会话" onClick={event => event.stopPropagation()}>
-      <button onClick={() => setChatSearch(false)}>关闭搜索</button>
+      <div className="sheet-heading"><h3>搜索本会话</h3><button type="button" className="sheet-close" aria-label="关闭搜索" onClick={() => setChatSearch(false)}><CloseIcon /></button></div>
       <MessageSearch app={app} conversationId={conversationId} open={hit => {setJumpId(hit.id);setChatSearch(false)}}/>
     </div></div>}
     {editor && <div className="sheet-backdrop" onClick={() => {if(!messageBusy)setEditor(null)}}><div className="sheet" role="dialog" aria-modal="true" aria-label="编辑消息" onClick={event => event.stopPropagation()}>
@@ -669,11 +768,11 @@ function Chat(props: {
       <textarea aria-label="消息正文" rows={7} maxLength={32768} value={editBody} disabled={messageBusy} onChange={event => setEditBody(event.target.value)}/>
       {(editor.editHistory ?? []).length > 0 && <details><summary>历史版本（选择后保存）</summary>{[...(editor.editHistory ?? [])].reverse().map((entry,index) =>
         <button className="history-version" key={index} disabled={messageBusy} onClick={() => setEditBody(entry.body)}>{new Date(entry.at).toLocaleString()} · {entry.body.slice(0,120)}</button>)}</details>}
-      <div className="actions"><button disabled={messageBusy || !editBody.trim()} onClick={async () => {
+      <div className="actions"><button className="btn-primary" disabled={messageBusy || !editBody.trim()} onClick={async () => {
         setMessageBusy(true)
         try {await app.editMessage(editor.id,editBody);setEditor(null)} catch(reason){notify({text:errorText(reason),tone:'error'})}
         finally{setMessageBusy(false)}
-      }}>保存</button><button disabled={messageBusy} onClick={() => setEditor(null)}>取消</button></div>
+      }}>保存</button><button className="btn-quiet" disabled={messageBusy} onClick={() => setEditor(null)}>取消</button></div>
     </div></div>}
     {confirmStop && <div className="dialog-backdrop" onClick={() => setConfirmStop(false)}>
       <div className="dialog" onClick={event => event.stopPropagation()}>
@@ -681,8 +780,8 @@ function Chat(props: {
         <h3>停止本轮互动？</h3>
         <p>当前生成和本轮剩余发言会同时取消。已完成的回复会保留，重启后可手动重试。</p>
         <div className="dialog-actions">
-          <button className="ghost" onClick={() => setConfirmStop(false)}>继续等待</button>
-          <button className="danger" onClick={() => { app.stop(conversationId); setConfirmStop(false) }}>停止</button>
+          <button className="btn-quiet" onClick={() => setConfirmStop(false)}>继续等待</button>
+          <button className="btn-danger" onClick={() => { app.stop(conversationId); setConfirmStop(false) }}>停止</button>
         </div>
       </div>
     </div>}
@@ -691,27 +790,37 @@ function Chat(props: {
 
 function ConversationSheet(props: {
   app: AppApi
+  version: number
   conversation: Conversation
+  editAgent: (agent: Actor) => void
   close: () => void
   notify: (notice: Notice) => void
 }) {
-  const { app, conversation, close, notify } = props
-  const [title, setTitle] = useState(conversation.title)
-  const [topic, setTopic] = useState(conversation.topic)
-  const [agents, setAgents] = useState<Actor[]>([])
-  const [members, setMembers] = useState<string[]>(conversation.members)
+  const { app, version, conversation, editAgent, close, notify } = props
   const [pinned, setPinned] = useState(conversation.pinned)
   const [muted, setMuted] = useState(conversation.muted)
   const [autonomyPaused, setAutonomyPaused] = useState(conversation.autonomyPaused)
   const [hidden, setHidden] = useState(conversation.hidden)
   const [detailMembers, setDetailMembers] = useState<Actor[]>([])
+  const [savingField, setSavingField] = useState('')
 
 
   useEffect(() => { void app.actors().then(items => {
-    setAgents(items.filter(item => item.kind === 'agent' && !item.archived))
     setDetailMembers(items.filter(item => conversation.members.includes(item.id) && item.id !== 'local-user'))
-  }) }, [app, conversation.members])
+  }).catch(reason => notify({ text: errorText(reason), tone: 'error' })) }, [app, conversation.members, version, notify])
 
+  const saveToggle = async (field: 'pinned' | 'muted' | 'autonomyPaused' | 'hidden', next: boolean) => {
+    if (savingField) return
+    setSavingField(field)
+    try {
+      await app.updateConversation(conversation.id, { [field]: next })
+      if (field === 'pinned') setPinned(next)
+      if (field === 'muted') setMuted(next)
+      if (field === 'autonomyPaused') setAutonomyPaused(next)
+      if (field === 'hidden') setHidden(next)
+    } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+    finally { setSavingField('') }
+  }
 
 
   return <div className="sheet-backdrop" onClick={close}>
@@ -725,44 +834,26 @@ function ConversationSheet(props: {
         <h2>{conversation.title}</h2>
         <p>{conversation.topic || (conversation.kind === 'group' ? `${detailMembers.length} 位角色在这个群聊` : '单聊')}</p>
       </div>
-      {conversation.kind === 'group' && <>
-        <label>名称<input value={title} onChange={event => setTitle(event.target.value)} /></label>
-        <label>话题<textarea value={topic} onChange={event => setTopic(event.target.value)} /></label>
-        <h4>群成员</h4>
-        <div className="pick-list">
-          {agents.map(agent => <label key={agent.id}>
-            <input type="checkbox" checked={members.includes(agent.id)} onChange={event => setMembers(current =>
-              event.target.checked ? [...current, agent.id] : current.filter(id => id !== agent.id))} />
-            {agent.name}
-          </label>)}
-        </div>
-      </>}
-      {conversation.kind === 'direct' && <div className="member-summary">
-        <p>{conversation.memberNames.filter(name => name !== '我').join('、')}</p>
-        <p className="hint">角色记忆可在“角色”页管理。单聊由你与一个角色组成。</p>
-      </div>}
-      <div className="switch-row"><span>置顶</span><button className="ghost" onClick={() => setPinned(value => !value)}>{pinned ? '已开启' : '关闭'}</button></div>
-      <div className="switch-row"><span>静音</span><button className="ghost" onClick={() => setMuted(value => !value)}>{muted ? '已开启' : '关闭'}</button></div>
-      <div className="switch-row"><span>暂停角色自主互动</span><button className="ghost" onClick={() => setAutonomyPaused(value => !value)}>{autonomyPaused ? '已暂停' : '运行中'}</button></div>
-      <div className="switch-row"><span>从列表隐藏</span><button className="ghost" onClick={() => setHidden(value => !value)}>{hidden ? '将隐藏' : '隐藏'}</button></div>
+      <div className="conversation-section-heading"><span>会话角色</span><small>点击可编辑资料与状态</small></div>
+      <div className="conversation-role-list" aria-label="管理会话角色">
+        {detailMembers.map(agent => <button type="button" key={agent.id} onClick={() => editAgent(agent)}>
+          <Avatar actor={agent} size={38} showStatus={false} />
+          <span><strong>{agent.name}</strong><small>{agent.archived ? '已归档' : agent.enabled ? '已启用' : '已停用'}</small></span>
+          <span>编辑资料 <ChevronRightIcon /></span>
+        </button>)}
+      </div>
+      <div className="conversation-section-heading"><span>聊天设置</span><small>开关修改后会立即保存</small></div>
+      <div className="settings-toggle-group">
+        <div className="switch-row"><span>置顶聊天</span><input type="checkbox" aria-label="置顶聊天" checked={pinned} disabled={!!savingField} onChange={event => void saveToggle('pinned', event.target.checked)} /></div>
+        <div className="switch-row"><span>消息免打扰</span><input type="checkbox" aria-label="消息免打扰" checked={muted} disabled={!!savingField} onChange={event => void saveToggle('muted', event.target.checked)} /></div>
+        <div className="switch-row"><span>暂停角色自主互动</span><input type="checkbox" aria-label="暂停角色自主互动" checked={autonomyPaused} disabled={!!savingField} onChange={event => void saveToggle('autonomyPaused', event.target.checked)} /></div>
+        <div className="switch-row"><span>从消息列表隐藏</span><input type="checkbox" aria-label="从消息列表隐藏" checked={hidden} disabled={!!savingField} onChange={event => void saveToggle('hidden', event.target.checked)} /></div>
+      </div>
       <WorldBookBindings app={app} conversationId={conversation.id} notify={notify}/>
       <ConversationNotes app={app} conversation={conversation} members={detailMembers} notify={notify} />
       <ConversationMemoryPanel app={app} conversation={conversation} members={detailMembers} notify={notify} />
       <ProactiveRules app={app} conversation={conversation} members={detailMembers} notify={notify} />
-      <button className="wide-primary" onClick={async () => {
-        try {
-          await app.updateConversation(conversation.id, {
-            ...(conversation.kind === 'group' ? { title, topic } : {}),
-            pinned, muted, autonomyPaused, hidden
-          })
-          if (conversation.kind === 'group') {
-            await app.updateMembers(conversation.id, members, conversation.members.filter(id =>
-              id !== 'local-user' && !members.includes(id)))
-          }
-          notify({ text: '会话资料已保存', tone: 'ok' })
-          close()
-        } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-      }}>保存</button>
+      <button className="wide-primary" onClick={close}>完成</button>
     </div>
   </div>
 }
@@ -776,7 +867,15 @@ function Whispers(props: {
 }) {
   const { app, version, selected, openConversation, close } = props
   const [items, setItems] = useState<Conversation[]>([])
-  useEffect(() => { void app.whispers().then(setItems) }, [app, version])
+  const [actors, setActors] = useState<Actor[]>([])
+  const [loadError, setLoadError] = useState('')
+  useEffect(() => {
+    let active = true
+    void Promise.all([app.whispers(), app.actors()]).then(([conversations, people]) => {
+      if (active) { setItems(conversations); setActors(people); setLoadError('') }
+    }, reason => { if (active) setLoadError(errorText(reason)) })
+    return () => { active = false }
+  }, [app, version])
   if (selected) return <Chat
     key={selected}
     app={app}
@@ -795,12 +894,17 @@ function Whispers(props: {
       </div>
     </div>
     <div className="info-banner">这里显示角色之间的对话。你是设备所有者，可以旁观和管理，但不能以任何角色身份插入发言。</div>
+    {loadError && <p className="hint" role="alert">{loadError}</p>}
     {items.length === 0
       ? <Empty text="角色之间还没有自动开启私聊。" />
       : <div className="conversation-rows scroll-region">{items.map(item => <button className="row conversation-row" key={item.id} onClick={() => openConversation(item.id)}>
-        <Avatar name={item.title.slice(0, 1)} size={48} status="#8A78C8" />
-        <div className="row-copy"><strong>{item.title}</strong><span>{item.lastMessage || '暂无消息'}</span></div>
-        <div className="row-meta">{item.paused && <small>已停止</small>}</div>
+        <AvatarStack actors={actors.filter(actor => item.members.includes(actor.id) && actor.kind === 'agent')} names={item.memberNames} size={44} />
+        <div className="row-copy"><strong>{item.title} {item.muted && <span className="muted-mark">静音</span>}</strong><span><EmoticonText text={item.lastMessage || '暂无消息'}/></span></div>
+        <div className="row-meta">
+          <small className="row-time">{formatRelative(item.updatedAt)}</small>
+          {item.unread > 0 && <i>{item.unread > 99 ? '99+' : item.unread}</i>}
+          {item.paused && <span className="row-state">已停止</span>}
+        </div>
       </button>)}</div>}
   </section>
 }
@@ -813,7 +917,11 @@ function Agents(props: {
 }) {
   const { app, version, notify, openConversation } = props
   const [agents, setAgents] = useState<Actor[]>([])
-  const [showArchived, setShowArchived] = useState(false)
+  const [agentFilter, setAgentFilter] = useState<'current' | 'active' | 'disabled' | 'archived'>('current')
+  const [agentQuery, setAgentQuery] = useState('')
+  const [managing, setManaging] = useState<Actor | null>(null)
+  const [agentBusy, setAgentBusy] = useState(false)
+  const [statusAgentId, setStatusAgentId] = useState('')
   const [editing, setEditing] = useState<Partial<Actor> | 'new' | null>(null)
   const [creatingGroup, setCreatingGroup] = useState(false)
   const [groupName, setGroupName] = useState('')
@@ -822,26 +930,45 @@ function Agents(props: {
   const [memoryAgent, setMemoryAgent] = useState<Actor | null>(null)
   const [mediaAgent, setMediaAgent] = useState<Actor | null>(null)
 
-  useEffect(() => { void app.actors().then(items => setAgents(items.filter(item => item.kind === 'agent'))) }, [app, version])
-  const visible = agents.filter(item => showArchived ? true : !item.archived)
+  useEffect(() => {
+    let current = true
+    void app.actors().then(items => { if (current) setAgents(items.filter(item => item.kind === 'agent')) },
+      reason => { if (current) notify({ text: errorText(reason), tone: 'error' }) })
+    return () => { current = false }
+  }, [app, version, notify])
+  const visible = agents.filter(item => (agentFilter === 'archived' ? item.archived : !item.archived &&
+    (agentFilter === 'current' || (agentFilter === 'active' ? item.enabled : !item.enabled))) &&
+    `${item.name} ${item.bio}`.toLowerCase().includes(agentQuery.trim().toLowerCase()))
   const active = agents.filter(item => !item.archived && item.enabled)
+  const changeAgentStatus = async (agent: Actor, status: AgentStatus) => {
+    if (agentBusy) return
+    setAgentBusy(true); setStatusAgentId(agent.id)
+    try {
+      await app.setAgentStatus(agent.id, status)
+      setManaging(null)
+      notify({ text: status === 'active' ? '角色已启用，从新消息继续聊天' : status === 'archived' ? '角色已归档，聊天与记忆保留' : '角色已停用，聊天与记忆保留', tone: 'ok' })
+    } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+    finally { setAgentBusy(false); setStatusAgentId('') }
+  }
 
   return <section className="list agents-page">
     <div className="page-sticky">
       <div className="agents-title">
-        <h1>你的角色 <em>共 {active.length} 位</em></h1>
-        <p>每个角色独立判断，在合适时加入对话</p>
+        <h1>你的角色 <em>共 {agents.length} 位</em></h1>
+        <p>随时调整角色资料、头像与互动状态</p>
       </div>
     </div>
     <div className="agents-scroll scroll-region">
-      <div className="agent-stat-row">
-        <span><b>{active.length}</b> 可用</span>
-        <span><b>{agents.filter(agent => !agent.archived && !agent.enabled).length}</b> 停用</span>
-        <span><b>{agents.filter(agent => agent.archived).length}</b> 归档</span>
+      <div className="agent-stat-row agent-filter-row" aria-label="角色状态筛选">
+        {([{ id: 'current', label: '全部', count: agents.filter(agent => !agent.archived).length },
+          { id: 'active', label: '已启用', count: active.length },
+          { id: 'disabled', label: '已停用', count: agents.filter(agent => !agent.archived && !agent.enabled).length },
+          { id: 'archived', label: '已归档', count: agents.filter(agent => agent.archived).length }] as const).map(filter =>
+          <button type="button" key={filter.id} aria-pressed={agentFilter === filter.id} onClick={() => setAgentFilter(filter.id)}>{filter.label} <b>{filter.count}</b></button>)}
       </div>
       <div className="agent-actions">
-        <button onClick={() => setEditing('new')}><PlusIcon /> 新角色</button>
-        <button onClick={() => setCreatingGroup(true)} disabled={!active.length}><ChatIcon /> 建群</button>
+        <button className="btn-primary" onClick={() => setEditing('new')}><PlusIcon /> 新角色</button>
+        <button className="btn-secondary" onClick={() => setCreatingGroup(true)} disabled={!active.length}><ChatIcon /> 建群</button>
         <label className="agent-action-file">导入<input type="file" accept=".json,.yomi-character.json" onChange={async event => {
           const file = event.target.files?.[0]
           if (!file) return
@@ -852,14 +979,11 @@ function Agents(props: {
           event.target.value = ''
         }} /></label>
         <CardImport app={app} notify={notify}/>
-        <button className="ghost" onClick={() => setShowArchived(value => !value)}>{showArchived ? '收起归档' : '归档'}</button>
       </div>
+      <input className="agent-search" type="search" aria-label="搜索角色" placeholder="搜索角色名称或简介" value={agentQuery} onChange={event => setAgentQuery(event.target.value)} />
       <div className="agent-grid">
         {visible.map(agent => <article className={`agent-card ${agent.archived ? 'archived' : ''}`} key={agent.id}>
-          <button className="agent-card-main" disabled={agent.archived} onClick={async () => {
-            try { openConversation(await app.openDirect(agent.id)) }
-            catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-          }}>
+          <button className="agent-card-main" aria-label={`编辑角色 ${agent.name}`} onClick={() => setEditing(agent)}>
             <Avatar actor={agent} size={48} status={agent.enabled ? undefined : '#B8C4D1'} />
             <div className="agent-copy">
               <h3>{agent.name}</h3>
@@ -870,33 +994,61 @@ function Agents(props: {
             </div>
           </button>
           {agent.bio && <p>“{agent.bio}”</p>}
-          <div className="agent-tools">
-            <span>chat</span><span>memory</span><span>whisper</span>
-          </div>
           <div className="agent-card-actions">
-            <button onClick={() => setEditing(agent)}>编辑资料</button>
-            <button onClick={() => setMemoryAgent(agent)}>记忆</button>
-            <button onClick={() => setMediaAgent(agent)}>多媒体</button>
+            <button className="btn-quiet" onClick={() => setEditing(agent)}>编辑资料</button>
+            <button className="btn-quiet" onClick={async () => {
+              try { openConversation(await app.openDirect(agent.id)) }
+              catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+            }}>{agent.enabled && !agent.archived ? '聊天' : '聊天记录'}</button>
+            <button className="btn-quiet" disabled={agentBusy} onClick={() => void changeAgentStatus(agent, agent.archived ? 'active' : agent.enabled ? 'disabled' : 'active')}>
+              {statusAgentId === agent.id ? '处理中…' : agent.archived ? '恢复并启用' : agent.enabled ? '停用' : '启用'}</button>
+            <button className="btn-icon" aria-label={`管理角色 ${agent.name}`} onClick={() => setManaging(agent)}><MoreIcon /></button>
           </div>
         </article>)}
       </div>
+      {!visible.length && <Empty text={agentQuery ? '没有找到这个角色。' : agentFilter === 'archived' ? '还没有归档角色。' : agentFilter === 'disabled' ? '没有停用的角色。' : '这里还没有角色。'}
+        action={!agentQuery && agentFilter === 'current' ? '创建第一个角色' : undefined} onAction={() => setEditing('new')} icon={<AgentsIcon />} />}
       <button className="hire-agent" onClick={() => setEditing('new')}>
         <span className="hire-plus"><PlusIcon /></span>
         <span><strong>创建新角色</strong><small>设计一位新的对话伙伴</small></span>
       </button>
     </div>
     {editing && <AgentEditor
+      key={editing === 'new' ? 'new' : editing.id}
       app={app}
       initial={editing === 'new' ? null : editing}
       close={() => setEditing(null)}
       notify={notify}
     />}
+    {managing && <div className="sheet-backdrop" onClick={() => { if (!agentBusy) setManaging(null) }}>
+      <div className="sheet menu-sheet action-sheet" role="dialog" aria-label={`${managing.name}的角色管理`} onClick={event => event.stopPropagation()}>
+        <div className="sheet-handle" /><h3>{managing.name}</h3>
+        <button className="btn-quiet" disabled={agentBusy} onClick={() => { setEditing(managing); setManaging(null) }}>编辑头像与资料</button>
+        <button className="btn-quiet" disabled={agentBusy} onClick={() => { setMemoryAgent(managing); setManaging(null) }}>管理记忆</button>
+        <button className="btn-quiet" disabled={agentBusy} onClick={() => { setMediaAgent(managing); setManaging(null) }}>图片、语音与表情</button>
+        <button className="btn-quiet" disabled={agentBusy} onClick={async () => {
+          setAgentBusy(true)
+          try { const copied = await app.copyAgent(managing.id); setManaging(null); setEditing(copied); notify({ text: `已复制：${copied.name}`, tone: 'ok' }) }
+          catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+          finally { setAgentBusy(false) }
+        }}>复制角色</button>
+        <button className="btn-quiet" disabled={agentBusy} onClick={async () => {
+          setAgentBusy(true)
+          try { const file = await app.exportAgent(managing.id); notify({ text: `已导出：${file}`, tone: 'ok' }); setManaging(null) }
+          catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+          finally { setAgentBusy(false) }
+        }}>导出角色</button>
+        <button className="btn-quiet" disabled={agentBusy} onClick={() => void changeAgentStatus(managing, managing.archived ? 'active' : 'archived')}>
+          {managing.archived ? '恢复并启用' : '归档角色'}</button>
+        <button className="sheet-cancel" disabled={agentBusy} onClick={() => setManaging(null)}>取消</button>
+      </div>
+    </div>}
     {creatingGroup && <div className="sheet-backdrop" onClick={() => setCreatingGroup(false)}>
       <div className="sheet tall" onClick={event => event.stopPropagation()}>
         <div className="sheet-handle" />
         <div className="sheet-heading"><h3>新建群聊</h3><button className="sheet-close" onClick={() => setCreatingGroup(false)}><CloseIcon /></button></div>
-        <input value={groupName} onChange={event => setGroupName(event.target.value)} placeholder="群名称" />
-        <input value={groupTopic} onChange={event => setGroupTopic(event.target.value)} placeholder="话题（可选）" />
+        <input value={groupName} maxLength={50} onChange={event => setGroupName(event.target.value)} placeholder="群名称" />
+        <input value={groupTopic} maxLength={4000} onChange={event => setGroupTopic(event.target.value)} placeholder="话题（可选）" />
         <div className="pick-list agent-pick-list">
           {active.map(agent => <label key={agent.id}>
             <input type="checkbox" checked={selectedAgents.includes(agent.id)} onChange={event =>
@@ -932,150 +1084,6 @@ function Agents(props: {
   </section>
 }
 
-function AgentEditor(props: {
-  app: AppApi
-  initial: Partial<Actor> | null
-  close: () => void
-  notify: (notice: Notice) => void
-}) {
-  const { app, initial, close, notify } = props
-  const [privateMemo, setPrivateMemo] = useState('')
-  const [privateMemoId, setPrivateMemoId] = useState<string | undefined>()
-  const [privateMemoReady, setPrivateMemoReady] = useState(!initial?.id)
-  useEffect(() => {
-    if (!initial?.id) return
-    void app.memories(initial.id).then(items => {
-      const memo = items.find(item => item.kind === 'private-note' && !item.conversationId && item.origin === 'human')
-      setPrivateMemo(memo?.body ?? ''); setPrivateMemoId(memo?.id); setPrivateMemoReady(true)
-    }, reason => notify({ text: errorText(reason), tone: 'error' }))
-  }, [app, initial?.id, notify])
-  const [modelProviders, setModelProviders] = useState<Provider[]>([])
-  const [modelsReady, setModelsReady] = useState(false)
-  const [models, setModels] = useState<Record<ModelBinding['purpose'], {
-    providerId: string; modelId: string; contextTokens: number; outputTokens: number
-  }>>({ main: { providerId: '', modelId: '', contextTokens: 32768, outputTokens: 2048 },
-    triage: { providerId: '', modelId: '', contextTokens: 32768, outputTokens: 512 },
-    summary: { providerId: '', modelId: '', contextTokens: 32768, outputTokens: 1800 } })
-  useEffect(() => {
-    void Promise.all([app.providers(), app.bindings()]).then(([providers, bindings]) => {
-      setModelProviders(providers)
-      setModels(current => Object.fromEntries(Object.entries(current).map(([purpose, defaults]) => {
-        const binding = initial?.id ? bindings.find(item => item.agentId === initial.id && item.purpose === purpose) : undefined
-        return [purpose, binding ? { providerId: binding.providerId ?? '', modelId: binding.modelId,
-          contextTokens: binding.contextTokens, outputTokens: binding.outputTokens } : defaults]
-      })) as typeof current)
-      setModelsReady(true)
-    }, reason => notify({ text: errorText(reason), tone: 'error' }))
-  }, [app, initial?.id, notify])
-  const [form, setForm] = useState({
-    name: initial?.name ?? '',
-    bio: initial?.bio ?? '',
-    persona: initial?.persona ?? '',
-    speakingStyle: initial?.speakingStyle ?? '',
-    color: initial?.color ?? '#7c3aed',
-    avatarData: initial?.avatarData ?? '',
-    enabled: initial?.enabled ?? true,
-    archived: initial?.archived ?? false,
-    allowPrivate: initial?.allowPrivate ?? true,
-    allowGroup: initial?.allowGroup ?? true
-  })
-  const save = async (patch: Partial<typeof form> = {}): Promise<boolean> => {
-    try {
-      if (!modelsReady || !privateMemoReady) throw new Error('角色设置仍在加载，请稍候')
-      for (const model of Object.values(models)) {
-        if (model.providerId && (!model.modelId.trim() || model.contextTokens < model.outputTokens + 1024)) {
-          throw new Error('请填写独立模型名称，并确保上下文大于输出预留')
-        }
-      }
-
-      const saved = await app.saveAgent({ ...(initial ?? {}), ...form, ...patch, name: patch.name ?? form.name })
-      if (privateMemo.trim()) await app.saveMemory({ id: privateMemoId, agentId: saved.id,
-        body: privateMemo, kind: 'private-note', origin: 'human', pinned: true })
-      else if (privateMemoId) await app.deleteMemory(privateMemoId)
-      for (const purpose of ['main', 'triage', 'summary'] as const) {
-        const model = models[purpose]
-        if (model.providerId) await app.saveBinding({ ...model, id: crypto.randomUUID(), purpose, agentId: saved.id, revision: 1 })
-        else await app.clearAgentBinding(saved.id, purpose)
-      }
-      notify({ text: `已保存角色：${saved.name}`, tone: 'ok' })
-      close()
-      return true
-    } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-    return false
-  }
-  return <div className="sheet-backdrop" onClick={close}>
-    <div className="sheet tall" onClick={event => event.stopPropagation()}>
-      <div className="sheet-handle" />
-      <div className="sheet-heading"><h3>{initial ? '编辑角色' : '新建角色'}</h3><button className="sheet-close" onClick={close}><CloseIcon /></button></div>
-      <label>名称<input value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="角色名称" /></label>
-      <label>简介<input value={form.bio} onChange={event => setForm({ ...form, bio: event.target.value })} placeholder="公开简介" /></label>
-      <label>人设<textarea value={form.persona} onChange={event => setForm({ ...form, persona: event.target.value })} placeholder="身份、经历、边界与行为方式" /></label>
-      <label>对角色的私有备忘<textarea value={privateMemo} disabled={!privateMemoReady}
-        onChange={event => setPrivateMemo(event.target.value)} placeholder="只供这个角色参考，跨会话保留" /></label>
-      <label>说话风格<textarea value={form.speakingStyle} onChange={event => setForm({ ...form, speakingStyle: event.target.value })} placeholder="语气、长度和表达习惯" /></label>
-      <details className="settings-card">
-        <summary>模型设置 · 默认继承应用配置</summary>
-        {(['main', 'triage', 'summary'] as const).map(purpose => <div key={purpose}>
-          <label>{{ main: '角色主模型', triage: '辅助判断模型', summary: '摘要模型' }[purpose]}
-            <select value={models[purpose].providerId} onChange={event => setModels(current => ({ ...current,
-              [purpose]: { ...current[purpose], providerId: event.target.value } }))}>
-              <option value="">继承应用默认</option>
-              {modelProviders.map(provider => <option value={provider.id} key={provider.id}>{provider.name}</option>)}
-            </select>
-          </label>
-          {models[purpose].providerId && <>
-            <label>模型 ID<input value={models[purpose].modelId} onChange={event => setModels(current => ({ ...current,
-              [purpose]: { ...current[purpose], modelId: event.target.value } }))} /></label>
-            <div className="two-cols">
-              <label>上下文<input type="number" value={models[purpose].contextTokens} onChange={event => setModels(current => ({ ...current,
-                [purpose]: { ...current[purpose], contextTokens: Number(event.target.value) } }))} /></label>
-              <label>输出上限<input type="number" value={models[purpose].outputTokens} onChange={event => setModels(current => ({ ...current,
-                [purpose]: { ...current[purpose], outputTokens: Number(event.target.value) } }))} /></label>
-            </div>
-          </>}
-        </div>)}
-      </details>
-      <label>头像颜色<input type="color" value={form.color} onChange={event => setForm({ ...form, color: event.target.value })} /></label>
-      {form.avatarData && <div className="avatar-preview"><img src={form.avatarData} alt="头像预览" />
-        <button className="ghost" onClick={() => setForm({ ...form, avatarData: '' })}>移除头像</button></div>}
-      <label className="file-button">选择头像图片<input type="file" accept="image/png,image/jpeg,image/webp" onChange={async event => {
-        const file = event.target.files?.[0]
-        if (!file) return
-        if (file.size > 2_000_000) { notify({ text: '头像图片不能超过 2 MB', tone: 'error' }); return }
-        setForm({ ...form, avatarData: await readImageThumbnail(file) })
-        event.target.value = ''
-      }} /></label>
-      <div className="switch-row"><span>启用</span><input type="checkbox" checked={form.enabled} onChange={event => setForm({ ...form, enabled: event.target.checked })} /></div>
-      <div className="switch-row"><span>允许主动私聊</span><input type="checkbox" checked={form.allowPrivate} onChange={event => setForm({ ...form, allowPrivate: event.target.checked })} /></div>
-      <div className="switch-row"><span>允许建立角色小组</span><input type="checkbox" checked={form.allowGroup} onChange={event => setForm({ ...form, allowGroup: event.target.checked })} /></div>
-      {initial?.id && <ActorWorldBookBindings app={app} actorId={initial.id} notify={notify}/>}
-      {!initial?.id && <p className="hint">保存角色后，可在编辑资料中绑定已有世界书。</p>}
-      {initial?.id && <OriginalCard app={app} actorId={initial.id} notify={notify}/>}
-      <button className="wide-primary" onClick={() => void save()}>保存角色</button>
-      {initial && <div className="danger-zone">
-        <button className="ghost" onClick={() => void save({ archived: !form.archived })}>{form.archived ? '取消归档' : '归档角色'}</button>
-        <button className="ghost" onClick={async () => {
-          try {
-            await app.saveAgent({ ...(initial ?? {}), ...form, name: form.name })
-            await app.copyAgent(initial.id!)
-            close()
-          }
-          catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-        }}>复制角色</button>
-        <button className="ghost" onClick={async () => {
-          try { notify({ text: `已导出：${await app.exportAgent(initial.id!)}`, tone: 'ok' }) }
-          catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-        }}>导出角色</button>
-        <button className="danger" onClick={async () => {
-          if (!confirm('彻底删除角色、记忆及角色间私聊关联？历史消息仍保留作者名称。')) return
-          try { await app.deleteAgent(initial.id!); close() }
-          catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-        }}>删除角色</button>
-      </div>}
-    </div>
-  </div>
-}
-
 function ConversationNotes(props: {
   app: AppApi
   conversation: Conversation
@@ -1097,10 +1105,10 @@ function ConversationNotes(props: {
   const privateNotes = notes.filter(note => note.scope === 'private')
   const memberName = (actorId: string) => members.find(item => item.id === actorId)?.name ?? '该成员'
 
-  return <div className="conversation-notes">
-    <h4>群共享记忆与备注</h4>
-    <p className="hint">共享内容供本群所有成员参考；私下备注仅传给指定成员，作为其回应参考。</p>
-    <div className="pick-list">
+  return <details className="conversation-notes conversation-note-section">
+    <summary><span><strong>群共享记忆与备注</strong><small>共享背景或只给某位成员的私下提示</small></span><span className="section-count">{notes.length}</span></summary>
+    <div className="conversation-note-content">
+    <div className="segmented-choice" role="radiogroup" aria-label="备注范围">
       <label><input type="radio" name={`note-scope-${conversation.id}`} checked={scope === 'shared'}
         onChange={() => setScope('shared')} />群共享备注</label>
       <label><input type="radio" name={`note-scope-${conversation.id}`} checked={scope === 'private'}
@@ -1114,7 +1122,7 @@ function ConversationNotes(props: {
     </label>}
     <label>内容<textarea value={body} onChange={event => setBody(event.target.value)}
       placeholder="例如：这个群上周约定周末去看海，还没去成" /></label>
-    <button disabled={!body.trim() || (scope === 'private' && !targetActorId)} onClick={async () => {
+    <div className="form-actions"><button className="btn-primary" disabled={!body.trim() || (scope === 'private' && !targetActorId)} onClick={async () => {
       try {
         await app.saveConversationNote({ id: editingId, conversationId: conversation.id, scope,
           targetActorId: scope === 'private' ? targetActorId : null, body })
@@ -1122,14 +1130,14 @@ function ConversationNotes(props: {
         notify({ text: '备注已保存', tone: 'ok' })
         load()
       } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-    }}>保存备注</button>
-    {editingId && <button className="link" onClick={() => { setEditingId(undefined); setBody('') }}>取消编辑</button>}
+    }}>{editingId ? '保存修改' : '添加备注'}</button>
+    {editingId && <button className="btn-quiet" onClick={() => { setEditingId(undefined); setBody('') }}>取消编辑</button>}</div>
     {!!shared.length && <div className="note-list">
       <h5>群共享</h5>
       {shared.map(note => <div key={note.id} className="note-row">
         <p>{note.body}</p>
-        <button className="link" onClick={() => { setEditingId(note.id); setScope(note.scope); setTargetActorId(note.targetActorId ?? ''); setBody(note.body) }}>编辑</button>
-        <button className="link danger-text" onClick={() => void app.deleteConversationNote(note.id).then(load).catch(reason => notify({ text: errorText(reason), tone: 'error' }))}>删除</button>
+        <div className="note-actions"><button className="btn-quiet" onClick={() => { setEditingId(note.id); setScope(note.scope); setTargetActorId(note.targetActorId ?? ''); setBody(note.body) }}>编辑</button>
+        <button className="btn-danger" onClick={() => { if (confirm('删除这条群共享备注？')) void app.deleteConversationNote(note.id).then(load).catch(reason => notify({ text: errorText(reason), tone: 'error' })) }}>删除</button></div>
       </div>)}
     </div>}
     {!!privateNotes.length && <div className="note-list">
@@ -1137,11 +1145,12 @@ function ConversationNotes(props: {
       {privateNotes.map(note => <div key={note.id} className="note-row">
         <small>{memberName(note.targetActorId ?? '')}</small>
         <p>{note.body}</p>
-        <button className="link" onClick={() => { setEditingId(note.id); setScope(note.scope); setTargetActorId(note.targetActorId ?? ''); setBody(note.body) }}>编辑</button>
-        <button className="link danger-text" onClick={() => void app.deleteConversationNote(note.id).then(load).catch(reason => notify({ text: errorText(reason), tone: 'error' }))}>删除</button>
+        <div className="note-actions"><button className="btn-quiet" onClick={() => { setEditingId(note.id); setScope(note.scope); setTargetActorId(note.targetActorId ?? ''); setBody(note.body) }}>编辑</button>
+        <button className="btn-danger" onClick={() => { if (confirm('删除这条私下备注？')) void app.deleteConversationNote(note.id).then(load).catch(reason => notify({ text: errorText(reason), tone: 'error' })) }}>删除</button></div>
       </div>)}
     </div>}
-  </div>
+    </div>
+  </details>
 }
 
 function ProactiveRules(props: {
@@ -1166,10 +1175,11 @@ function ProactiveRules(props: {
     `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
   const memberName = (id: string | null) => id ? members.find(item => item.id === id)?.name ?? '该成员' : '全体成员'
 
-  return <div className="proactive-rules">
-    <h4>主动发言</h4>
+  return <details className="proactive-rules proactive-rule-section">
+    <summary><span><strong>主动发言</strong><small>按时间让角色自行决定是否开口</small></span><span className="section-count">{rules.length}</span></summary>
+    <div className="proactive-rule-content">
     <p className="hint">到点后由角色自行判断是否开口，不保证一定发言。会话暂停、存在未处理任务或角色停用时跳过本次触发。</p>
-    <div className="pick-list">
+    <div className="segmented-choice" role="radiogroup" aria-label="主动发言频率">
       <label><input type="radio" name={`proactive-mode-${conversation.id}`} checked={mode === 'interval'}
         onChange={() => setMode('interval')} />固定间隔</label>
       <label><input type="radio" name={`proactive-mode-${conversation.id}`} checked={mode === 'daily'}
@@ -1191,7 +1201,7 @@ function ProactiveRules(props: {
     </label>
     <label>提示（可选）<input value={prompt} onChange={event => setPrompt(event.target.value)}
       placeholder="例如：聊聊今天有没有什么新鲜事" /></label>
-    <button onClick={async () => {
+    <div className="form-actions"><button className="btn-primary" onClick={async () => {
       try {
         await app.saveProactiveRule({ conversationId: conversation.id, actorId: actorId || null,
           mode, intervalMinutes, dailyAt, prompt })
@@ -1199,22 +1209,23 @@ function ProactiveRules(props: {
         notify({ text: '主动发言已安排', tone: 'ok' })
         load()
       } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-    }}>添加规则</button>
+    }}>添加规则</button></div>
     {rules.map(rule => <div key={rule.id} className={`note-row ${rule.enabled ? '' : 'disabled'}`}>
       <div>
         <strong>{rule.mode === 'interval' ? `每 ${rule.intervalMinutes} 分钟` : `每天 ${formatDaily(rule.dailyAt)}`}</strong>
         <small>{memberName(rule.actorId)}{rule.enabled ? '' : ' · 已停用'}</small>
         {rule.prompt && <p className="hint">{rule.prompt}</p>}
       </div>
-      <div className="actions">
-        <button className="link" onClick={() => void app.saveProactiveRule({ id: rule.id,
+      <div className="note-actions">
+        <button className="btn-quiet" onClick={() => void app.saveProactiveRule({ id: rule.id,
           conversationId: rule.conversationId, actorId: rule.actorId, mode: rule.mode,
           intervalMinutes: rule.intervalMinutes, dailyAt: rule.dailyAt, prompt: rule.prompt,
           enabled: !rule.enabled }).then(load).catch(reason => notify({ text: errorText(reason), tone: 'error' }))}>{rule.enabled ? '停用' : '启用'}</button>
-        <button className="link danger-text" onClick={() => void app.deleteProactiveRule(rule.id).then(load).catch(reason => notify({ text: errorText(reason), tone: 'error' }))}>删除</button>
+        <button className="btn-danger" onClick={() => { if (confirm('删除这条主动发言规则？')) void app.deleteProactiveRule(rule.id).then(load).catch(reason => notify({ text: errorText(reason), tone: 'error' })) }}>删除</button>
       </div>
     </div>)}
-  </div>
+    </div>
+  </details>
 }
 
 function MemorySheet(props: {
@@ -1230,6 +1241,8 @@ function MemorySheet(props: {
   const [moving, setMoving] = useState<Memory | null>(null)
   const [scope, setScope] = useState('')
   const [conversations, setConversations] = useState<Conversation[]>([])
+  const [busy, setBusy] = useState(false)
+  const [filter, setFilter] = useState<'all' | 'global' | 'conversation'>('all')
   const load = () => void app.memories(agent.id).then(setItems, reason =>
     notify({ text: errorText(reason), tone: 'error' }))
   useEffect(() => {
@@ -1237,62 +1250,88 @@ function MemorySheet(props: {
     void app.conversations(true).then(items => setConversations(items.filter(item =>
       item.members.includes(agent.id))))
   }, [app, agent.id])
+  const visible = items.filter(memory => filter === 'all' || (filter === 'global' ? !memory.conversationId : !!memory.conversationId))
+  const conversationName = (id: string | null) => conversations.find(item => item.id === id)?.title ?? '已离开的会话'
   return <div className="sheet-backdrop" onClick={close}>
     <div className="sheet tall" onClick={event => event.stopPropagation()}>
       <div className="sheet-handle" />
       <div className="sheet-heading"><h3>{agent.name} 的记忆</h3><button className="sheet-close" onClick={close}><CloseIcon /></button></div>
       <p className="hint">文字记忆按角色隔离。自动记忆只属于当前会话；你创建的全局记忆可被该角色在其他会话读取。</p>
-      <textarea value={body} onChange={event => setBody(event.target.value)} placeholder="记录一条角色记忆" />
-      <select value={scope} onChange={event => setScope(event.target.value)}>
-        <option value="">全局（该角色所有会话）</option>
-        {conversations.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
-      </select>
-      <button className="wide-primary" disabled={!body.trim()} onClick={async () => {
-        try {
-          await app.saveMemory({ agentId: agent.id, conversationId: scope || null, body, origin: 'human', pinned: false })
-          setBody(''); load()
-        } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-      }}>添加记忆</button>
+      <section className="memory-compose" aria-label="添加记忆">
+        <div className="card-heading"><strong>添加一条记忆</strong><span>{scope ? '只在此会话使用' : '该角色所有会话可用'}</span></div>
+        <textarea rows={3} value={body} maxLength={8000} onChange={event => setBody(event.target.value)} placeholder="例如：她不喜欢临时改变计划，但会直接说出来" />
+        <select aria-label="记忆生效范围" value={scope} onChange={event => setScope(event.target.value)}>
+          <option value="">全局 · 该角色所有会话</option>
+          {conversations.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
+        </select>
+        <button className="btn-primary" disabled={busy || !body.trim()} onClick={async () => {
+          setBusy(true)
+          try {
+            await app.saveMemory({ agentId: agent.id, conversationId: scope || null, body, origin: 'human', pinned: false })
+            setBody(''); load()
+            notify({ text: '记忆已添加', tone: 'ok' })
+          } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+          finally { setBusy(false) }
+        }}>添加记忆</button>
+      </section>
+      <div className="memory-filter" role="group" aria-label="筛选记忆">
+        {([['all', `全部 ${items.length}`], ['global', '全局'], ['conversation', '会话']] as const).map(([id, label]) =>
+          <button type="button" key={id} aria-pressed={filter === id} onClick={() => setFilter(id)}>{label}</button>)}
+      </div>
       <div className="memory-list">
-        {items.map(memory => <div className="memory-card" key={memory.id}>
-          <div className="message-meta"><small>{memory.conversationId ? '会话记忆' : '全局记忆'} · {memory.origin === 'human' ? '你创建' : '角色记录'} · {new Date(memory.updatedAt).toLocaleDateString()}</small>
+        {visible.map(memory => <article className={'memory-card' + (memory.pinned ? ' pinned' : '')} key={memory.id}>
+          <div className="memory-card-meta"><span>{memory.conversationId ? conversationName(memory.conversationId) : '全局记忆'}</span><small>{memory.origin === 'human' ? '你创建' : '角色记录'} · {new Date(memory.updatedAt).toLocaleDateString()}</small>
             {memory.pinned && <span className="badge">置顶</span>}</div>
           <p>{memory.body}</p>
-          <div className="actions">
-            <button className="link" onClick={async () => {
-              await app.saveMemory({ ...memory, agentId: agent.id, body: memory.body, pinned: !memory.pinned, origin: memory.origin })
-              load()
+          <div className="memory-card-actions">
+            <button className="btn-quiet" disabled={busy} onClick={async () => {
+              setBusy(true)
+              try {
+                await app.saveMemory({ ...memory, agentId: agent.id, body: memory.body, pinned: !memory.pinned, origin: memory.origin })
+                load()
+              } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+              finally { setBusy(false) }
             }}>{memory.pinned ? '取消置顶' : '置顶'}</button>
-            <button className="link" onClick={() => setEditing(memory)}>编辑</button>
-            <button className="link" onClick={() => {
+            <button className="btn-quiet" disabled={busy} onClick={() => setEditing(memory)}>编辑</button>
+            <button className="btn-quiet" disabled={busy} onClick={() => {
               if (memory.conversationId) {
+                if (!confirm('将这条会话记忆改为全局记忆？其他会话之后也能读取。')) return
+                setBusy(true)
                 void app.moveMemoryScope(memory.id, null).then(load, reason =>
-                  notify({ text: errorText(reason), tone: 'error' }))
+                  notify({ text: errorText(reason), tone: 'error' })).finally(() => setBusy(false))
               } else {
                 setMoving(memory)
               }
             }}>{memory.conversationId ? '设为全局' : '限定会话'}</button>
-            <button className="link danger-text" onClick={async () => {
-              if (!confirm('删除这条记忆？')) return
-              await app.deleteMemory(memory.id); load()
+            <button className="btn-danger" disabled={busy} onClick={async () => {
+              if (!confirm('删除这条记忆？删除后不会再进入后续上下文。')) return
+              setBusy(true)
+              try { await app.deleteMemory(memory.id); load(); notify({ text: '记忆已删除', tone: 'ok' }) }
+              catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+              finally { setBusy(false) }
             }}>删除</button>
           </div>
-        </div>)}
-        {!items.length && <Empty text="还没有记忆。" />}
+        </article>)}
+        {!visible.length && <Empty text={items.length ? '这个范围下没有记忆。' : '还没有记忆。'} />}
       </div>
       {editing && <div className="edit-memory">
-        <textarea value={editing.body} onChange={event => setEditing({ ...editing, body: event.target.value })} />
-        <button onClick={async () => {
-          await app.saveMemory({
-            id: editing.id, agentId: agent.id, conversationId: editing.conversationId,
-            body: editing.body, kind: editing.kind, about: editing.about,
-            pinned: editing.pinned, origin: 'human'
-          })
-          setEditing(null); load()
-        }}>保存修改</button>
+        <div className="card-heading"><strong>编辑记忆</strong><button className="sheet-close" type="button" aria-label="关闭记忆编辑" onClick={() => setEditing(null)}><CloseIcon /></button></div>
+        <textarea rows={4} value={editing.body} maxLength={8000} onChange={event => setEditing({ ...editing, body: event.target.value })} />
+        <div className="actions"><button className="btn-primary" disabled={busy || !editing.body.trim()} onClick={async () => {
+          setBusy(true)
+          try {
+            await app.saveMemory({
+              id: editing.id, agentId: agent.id, conversationId: editing.conversationId,
+              body: editing.body, kind: editing.kind, about: editing.about,
+              pinned: editing.pinned, origin: 'human'
+            })
+            setEditing(null); load(); notify({ text: '记忆已更新', tone: 'ok' })
+          } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+          finally { setBusy(false) }
+        }}>保存修改</button><button className="btn-quiet" type="button" disabled={busy} onClick={() => setEditing(null)}>取消</button></div>
       </div>}
       {moving && <div className="memory-scope-picker">
-        <div className="sheet-heading"><h4>选择记忆所属会话</h4><button className="link" onClick={() => setMoving(null)}>取消</button></div>
+        <div className="card-heading"><strong>选择记忆所属会话</strong><button className="sheet-close" type="button" aria-label="关闭会话选择" onClick={() => setMoving(null)}><CloseIcon /></button></div>
         {conversations.map(item => <button key={item.id} onClick={async () => {
           try {
             await app.moveMemoryScope(moving.id, item.id)
@@ -1309,32 +1348,25 @@ function MemorySheet(props: {
   </div>
 }
 
+type MeView = 'home' | 'providers' | 'models' | 'profile' | 'background' | 'usage' | 'backup' | 'storage' | 'updates' | 'about'
+
 function Me(props: {
   app: AppApi
   version: number
   notify: (notice: Notice) => void
 }) {
   const { app, version, notify } = props
+  const [view, setView] = useState<MeView>('home')
+  const region = useRef<HTMLElement>(null)
   const [lorebookOpen, setLorebookOpen] = useState(false)
-  const [profile, setProfile] = useState({ name: '', bio: '' })
-  const profileDirty = useRef(false)
+  const [profile, setProfile] = useState({ name: '', bio: '', avatarData: '' })
+  const profileDirtyRef = useRef(false)
+  const [profileDirty, setProfileDirty] = useState(false)
   const [providers, setProviders] = useState<Provider[]>([])
   const [bindings, setBindings] = useState<ModelBinding[]>([])
   const [usage, setUsage] = useState<ModelCallRecord[]>([])
-  const [providerForm, setProviderForm] = useState({
-    id: '',
-    name: '',
-    protocol: 'responses' as ProviderProtocol,
-    purpose: 'main' as ModelBinding['purpose'],
-    baseUrl: '',
-    model: '',
-    contextTokens: 32768,
-    outputTokens: 2048
-  })
-  const [testing, setTesting] = useState('')
   const [showUsage, setShowUsage] = useState(false)
-  const [showProviderForm, setShowProviderForm] = useState(false)
-  const [vaultReady, setVaultReady] = useState(false)
+  const [usagePurpose, setUsagePurpose] = useState<'all' | 'main' | 'triage' | 'summary' | 'sticker-analysis'>('all')
   const [backupPassword, setBackupPassword] = useState('')
   const [backupBusy, setBackupBusy] = useState(false)
   const [recovery, setRecovery] = useState<RecoveryInfo | null>(null)
@@ -1342,210 +1374,145 @@ function Me(props: {
   const [storage, setStorage] = useState<StorageStats | null>(null)
 
   useEffect(() => {
-    void Promise.all([app.localUser(), app.providers(), app.bindings(), app.usage(), app.secureVaultStatus(),
+    let active = true
+    void Promise.all([app.localUser(), app.providers(), app.bindings(), app.usage(),
       app.dataRecovery(), app.usageSummary(), app.storageStats()])
-      .then(([user, connectionItems, bindingItems, calls, secure, recoveryInfo, totals, stats]) => {
-        if (!profileDirty.current) setProfile({ name: user.name, bio: user.bio })
+      .then(([user, connectionItems, bindingItems, calls, recoveryInfo, totals, stats]) => {
+        if (!active) return
+        if (!profileDirtyRef.current) setProfile({ name: user.name, bio: user.bio, avatarData: user.avatarData })
         setProviders(connectionItems)
         setBindings(bindingItems.filter(item => !item.agentId))
         setUsage(calls)
-        setVaultReady(secure)
         setRecovery(recoveryInfo)
         setUsageTotals(totals)
         setStorage(stats)
-      }, reason => notify({ text: errorText(reason), tone: 'error' }))
+      }, reason => { if (active) notify({ text: errorText(reason), tone: 'error' }) })
+    return () => { active = false }
   }, [app, version, notify])
 
   const mainBinding = bindings.find(item => item.purpose === 'main')
   const totalTokens = (usageTotals?.inputTokens ?? 0) + (usageTotals?.outputTokens ?? 0)
+  const visibleUsage = usage.filter(call => usagePurpose === 'all' || call.purpose === usagePurpose)
+  const labels: Record<MeView, string> = { home: '我', providers: '提供商', models: '默认模型', profile: '本地资料',
+    background: '后台互动', usage: '用量统计', backup: '备份与恢复', storage: '存储与诊断', updates: '应用更新', about: '关于 Yomi' }
+  const open = (next: MeView) => { setView(next); region.current?.scrollTo({ top: 0 }) }
 
-  const editProvider = (provider?: Provider) => {
-    if (!provider) {
-      setProviderForm({ id: '', name: '', protocol: 'responses', purpose: 'main', baseUrl: '', model: '',
-        contextTokens: 32768, outputTokens: 2048 })
-      setShowProviderForm(true)
-      return
-    }
-    const binding = mainBinding?.providerId === provider.id ? mainBinding : bindings.find(item => item.providerId === provider.id)
-    setProviderForm({
-      id: provider.id, name: provider.name, protocol: provider.protocol,
-      purpose: binding?.purpose ?? 'main',
-      baseUrl: provider.baseUrl, model: binding?.modelId ?? '',
-      contextTokens: binding?.contextTokens ?? 32768,
-      outputTokens: binding?.outputTokens ?? 2048
-    })
-    setShowProviderForm(true)
-  }
-
-  const addSummaryBinding = async () => {
-    const main = bindings.find(item => item.purpose === 'main')
-    if (!main?.providerId) {
-      notify({ text: '请先保存一个主模型连接', tone: 'error' })
-      return
-    }
-    try {
-      await app.saveBinding({ ...main, id: crypto.randomUUID(), purpose: 'summary', revision: 1 })
-      notify({ text: '摘要模型已继承主模型', tone: 'ok' })
-    } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-  }
-
-  return <section className="me scroll-region">
-    <div className="me-hero">
-      <div className="me-avatar"><Avatar name={profile.name || '我'} size={92} status="#6EC56A" /></div>
-      <h1>{profile.name || '我'}</h1>
-      <p>{profile.bio || '本地优先的对话空间'}</p>
-      <span className="local-badge"><i /> LOCAL · 数据保存在此设备</span>
-    </div>
-    <Section title="本地资料">
-    <div className="settings-card">
-      <label>昵称<input value={profile.name} onChange={event => { profileDirty.current = true; setProfile({ ...profile, name: event.target.value }) }} /></label>
-      <label>自我介绍<textarea value={profile.bio} onChange={event => { profileDirty.current = true; setProfile({ ...profile, bio: event.target.value }) }} /></label>
-      <button className="wide-primary" onClick={async () => {
-        try { await app.saveUserProfile(profile.name, profile.bio); profileDirty.current = false; notify({ text: '本地资料已保存', tone: 'ok' }) }
-        catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-      }}>保存资料</button>
-    </div>
-    </Section>
-
-    <Section title="模型连接">
-    <div className="settings-card">
-      <div className="card-heading"><span className="card-kicker">当前连接</span><button className="text-button" onClick={() => editProvider()}>＋ 添加连接</button></div>
-      {providers.map(provider => <div className="provider-row" key={provider.id}>
-        <div><strong>{provider.name}</strong><span>{provider.protocol} · {provider.credentialState === 'stored' ? 'Key 已安全保存' : '缺少 Key'}</span></div>
-        <button className="chevron-button" onClick={() => editProvider(provider)}>编辑</button>
-      </div>)}
-      {!providers.length && <p className="hint">尚未配置模型。Yomi 不会自动连接任何官方服务。</p>}
-      {mainBinding && <div className="binding-row">
-        <span>上下文摘要：{bindings.some(item => item.purpose === 'summary') ? '已配置' : '未配置'}</span>
-        {!bindings.some(item => item.purpose === 'summary') &&
-          <button className="link" onClick={() => void addSummaryBinding()}>继承主模型</button>}
-      </div>}
-      {showProviderForm && <div className="provider-form nested-panel">
-        <h4>{providerForm.id ? '编辑连接' : '新连接'}</h4>
-        <label>名称<input value={providerForm.name} onChange={event => setProviderForm({ ...providerForm, name: event.target.value })} placeholder="例如：我的模型" /></label>
-        <label>协议<select value={providerForm.protocol} onChange={event => setProviderForm({ ...providerForm, protocol: event.target.value as ProviderProtocol })}>
-          <option value="responses">Responses</option>
-          <option value="chat-completions">Chat Completions</option>
-        </select></label>
-        <label>Base URL<input value={providerForm.baseUrl} onChange={event => setProviderForm({ ...providerForm, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label>
-        <label>模型 ID<input value={providerForm.model} onChange={event => setProviderForm({ ...providerForm, model: event.target.value })} placeholder="模型名称" /></label>
-        <label>默认用途<select value={providerForm.purpose} onChange={event => {
-          const purpose = event.target.value as ModelBinding['purpose']
-          const existing = bindings.find(item => item.purpose === purpose && item.providerId === providerForm.id)
-          setProviderForm({ ...providerForm, purpose, ...(existing ? { model: existing.modelId,
-            contextTokens: existing.contextTokens, outputTokens: existing.outputTokens } : {}) })
-        }}>
-          <option value="main">角色主模型</option><option value="triage">辅助判断模型</option><option value="summary">上下文摘要模型</option>
-        </select></label>
-        <div className="secure-key-note">
-          <strong>API Key</strong>
-          <span>{providerForm.id ? '保存时可在系统安全窗口替换 Key；取消则保留原 Key。' : '保存连接时由系统安全窗口输入，网页层不会接收。'}</span>
-        </div>
-        <div className="two-cols">
-          <label>上下文<input type="number" value={providerForm.contextTokens} onChange={event => setProviderForm({ ...providerForm, contextTokens: Number(event.target.value) })} /></label>
-          <label>输出上限<input type="number" value={providerForm.outputTokens} onChange={event => setProviderForm({ ...providerForm, outputTokens: Number(event.target.value) })} /></label>
-        </div>
-        <div className="actions">
-          <button className="wide-primary" onClick={async () => {
-            try {
-              if (!providerForm.name.trim() || !providerForm.baseUrl.trim() || !providerForm.model.trim()) {
-                throw new Error('请填写连接名称、Base URL 和模型 ID')
-              }
-              if (!vaultReady) throw new Error('安全凭证模块不可用，无法保存 API Key')
-              const provider = await app.saveProvider({
-                id: providerForm.id || crypto.randomUUID(),
-                name: providerForm.name,
-                protocol: providerForm.protocol,
-                baseUrl: providerForm.baseUrl,
-                credentialRef: '',
-                credentialState: providerForm.id ? providers.find(item => item.id === providerForm.id)?.credentialState ?? 'missing' : 'missing',
-                enabled: true,
-                configVersion: 1,
-                createdAt: 0,
-                updatedAt: 0
-              }, '__prompt__')
-              await app.saveBinding({
-                id: crypto.randomUUID(),
-                providerId: provider.id,
-                modelId: providerForm.model,
-                contextTokens: providerForm.contextTokens,
-                outputTokens: providerForm.outputTokens,
-                purpose: providerForm.purpose,
-                revision: 1
-              })
-              if (providerForm.purpose === 'main' && !bindings.some(item => item.purpose === 'summary')) {
-                await app.saveBinding({
-                  id: crypto.randomUUID(), providerId: provider.id, modelId: providerForm.model,
-                  contextTokens: providerForm.contextTokens, outputTokens: providerForm.outputTokens,
-                  purpose: 'summary', revision: 1
-                })
-              }
-              setShowProviderForm(false)
-              notify({
-                text: provider.credentialState === 'stored'
-                  ? '连接已保存到设备'
-                  : '连接已保存，API Key 尚未设置',
-                tone: 'ok'
-              })
-            } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-          }}>保存连接</button>
-          {providerForm.id && <button className="ghost" onClick={async () => {
-            try {
-              setTesting(providerForm.id)
-              const response = await app.testProvider(providerForm.id, providerForm.model)
-              notify({ text: `连接可用：${response}`, tone: 'ok' })
-            } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-            finally { setTesting('') }
-          }} disabled={testing === providerForm.id}>{testing === providerForm.id ? '测试中…' : '测试连接'}</button>}
-          {providerForm.id && <button className="danger" onClick={async () => {
-            if (!confirm('删除连接和本机保存的 Key？相关绑定会变为未配置。')) return
-            try { await app.deleteProvider(providerForm.id); editProvider(); notify({ text: '连接已删除', tone: 'ok' }) }
-            catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-          }}>删除连接</button>}
-        </div>
-        <p className="hint">Key 由 Android Keystore 加密；数据库和备份不保存明文。主模型需要支持工具调用。</p>
-        {!vaultReady && <p className="hint">安全凭证模块自检失败，连接元数据仍可查看，但不能保存 Key。</p>}
-      </div>}
-    </div>
-    </Section>
-
-    <Section title="多媒体设置"><MediaSettingsPanel app={app} notify={notify}/></Section>
-    <Section title="世界书">
-    <div className="settings-card">
-      <p className="hint">世界书存放世界设定。全局卷对全部会话生效；局部卷可绑定聊天或角色。角色绑定在“角色 → 编辑资料 → 角色世界书”管理。条目可以设为常驻，或用关键词在对话命中时注入。</p>
-      <div className="actions">
-        <button onClick={() => setLorebookOpen(true)}>管理世界书</button>
+  return <section ref={region} className={'me scroll-region ' + (view === 'home' ? 'me-home' : 'me-detail')}>
+    {view !== 'home' && <header className="settings-page-header">
+      <button type="button" aria-label="返回我" onClick={() => open('home')}><BackIcon /></button>
+      <h1>{labels[view]}</h1>
+    </header>}
+    {view === 'home' && <>
+      <div className="me-home-hero">
+        <Avatar name={profile.name || '我'} avatarData={profile.avatarData} size={64} status="#6EC56A" />
+        <div className="me-home-identity"><h1>{profile.name || '我'}</h1><p>{profile.bio || '本地优先的对话空间'}</p><span className="me-local-status"><i />数据保存在此设备</span></div>
+        <button className="text-button" type="button" onClick={() => open('profile')}>编辑资料</button>
       </div>
+      <nav className="settings-home-menu" aria-label="个人设置">
+        <div className="settings-menu-group"><h2>聊天与模型</h2>
+          <SettingsMenuRow Icon={SettingsIcon} title="提供商" description="管理 API 地址、Key 和可用模型"
+            value={`${providers.length} 个`} onClick={() => open('providers')} />
+          <SettingsMenuRow Icon={AtIcon} title="默认模型" description="为聊天、图片和语音选择默认模型"
+            value={mainBinding?.providerId && providers.some(item => item.id === mainBinding.providerId) ? '已配置' : '待配置'} onClick={() => open('models')} />
+          <SettingsMenuRow Icon={MemoryIcon} title="世界书" description="管理世界设定；到角色或会话中绑定" onClick={() => setLorebookOpen(true)} />
+          <SettingsMenuRow Icon={ChatIcon} title="后台互动" description="角色主动发言与锁屏互动"
+            value={app.runtime.backgroundActive() ? '已开启' : '关闭'} onClick={() => open('background')} />
+        </div>
+        <div className="settings-menu-group"><h2>数据管理</h2>
+          <SettingsMenuRow Icon={AtIcon} title="用量统计" description={'已知 ' + totalTokens.toLocaleString() + ' tokens'} value={(usageTotals?.calls ?? 0) + ' 次调用'} onClick={() => open('usage')} />
+          <SettingsMenuRow Icon={UploadIcon} title="备份与恢复" description="整机备份、按模块恢复与数据回退" onClick={() => open('backup')} />
+          <SettingsMenuRow Icon={MoreIcon} title="存储与诊断" description="空间清理与运行诊断" value={storage ? (storage.bytes / 1048576).toFixed(1) + ' MB' : undefined} onClick={() => open('storage')} />
+        </div>
+        <div className="settings-menu-group"><h2>应用</h2>
+          <SettingsMenuRow Icon={RefreshIcon} title="应用更新" description="检查新版本与页面更新" onClick={() => open('updates')} />
+          <SettingsMenuRow Icon={MeIcon} title="关于 Yomi" description="版本与本地数据说明" onClick={() => open('about')} />
+        </div>
+      </nav>
+      <div className="version-note">YOMI · 你的本地对话空间</div>
+    </>}
+    {(view === 'providers' || view === 'models') && <ModelSettings key={view} page={view === 'providers' ? 'providers' : 'defaults'}
+      openProviders={() => open('providers')} app={app} version={version} notify={notice => notify(notice)} />}
+      {view === 'profile' && <>
+    <Section>
+    <div className="settings-card profile-card">
+      <div className="profile-avatar-editor">
+        <Avatar name={profile.name || '我'} avatarData={profile.avatarData} size={76} showStatus={false} />
+        <div className="profile-avatar-actions">
+          <strong>个人头像</strong>
+          <span>支持 PNG、JPG、WebP，图片会自动压缩后保存在本机。</span>
+          <label className="file-button btn-secondary">{profile.avatarData ? '更换头像' : '上传头像'}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={async event => {
+            const input = event.currentTarget
+            const file = input.files?.[0]
+            input.value = ''
+            if (!file) return
+            if (file.size > 2_000_000) { notify({ text: '头像图片不能超过 2 MB', tone: 'error' }); return }
+            try {
+              const avatarData = await readImageThumbnail(file)
+              profileDirtyRef.current = true
+              setProfileDirty(true)
+              setProfile(current => ({ ...current, avatarData }))
+            } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+          }} /></label>
+          {profile.avatarData && <button className="btn-quiet" type="button" onClick={() => {
+            profileDirtyRef.current = true
+            setProfileDirty(true)
+            setProfile(current => ({ ...current, avatarData: '' }))
+          }}>移除头像</button>}
+        </div>
+      </div>
+      <label>昵称<input value={profile.name} maxLength={80} onChange={event => { profileDirtyRef.current = true; setProfileDirty(true); setProfile({ ...profile, name: event.target.value }) }} /></label>
+      <label>自我介绍<textarea rows={3} maxLength={1000} value={profile.bio} onChange={event => { profileDirtyRef.current = true; setProfileDirty(true); setProfile({ ...profile, bio: event.target.value }) }} placeholder="这段介绍会出现在你的本地资料中" /></label>
+      <p className="hint">资料只保存在此设备，不会自动上传；角色在聊天中仍以“你”称呼你。</p>
+      <button className="wide-primary" disabled={!profile.name.trim() || !profileDirty} onClick={async () => {
+        try {
+          await app.saveUserProfile(profile.name, profile.bio, profile.avatarData)
+          profileDirtyRef.current = false
+          setProfileDirty(false)
+          notify({ text: '本地资料已保存', tone: 'ok' })
+        }
+        catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
+      }}>{profileDirty ? '保存资料' : '已保存'}</button>
     </div>
     </Section>
-
-    <Section title="后台互动"><div className="settings-card">
-      <div className="switch-row"><span>允许锁屏后按规则主动发言</span><button disabled={!app.backgroundSupported()}
+    </>}
+    {view === 'background' && <>
+    <Section><div className="settings-card">
+      <div className="background-status"><span className={app.runtime.backgroundActive() ? 'ready' : ''}><i />{app.runtime.backgroundActive() ? '后台互动已开启' : '后台互动已关闭'}</span><small>{app.backgroundSupported() ? '仅 Android 可用' : '当前平台仅支持前台定时'}</small></div>
+      <div className="switch-row"><span>允许锁屏后按规则主动发言</span><input type="checkbox" aria-label="允许锁屏后按规则主动发言" checked={app.runtime.backgroundActive()} disabled={!app.backgroundSupported()}
         onClick={async () => {
           try { await app.setBackgroundEnabled(!app.runtime.backgroundActive()) }
           catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
-        }}>{app.runtime.backgroundActive() ? '已开启' : '关闭'}</button></div>
+        }} /></div>
       <p className="hint">开启后会显示常驻通知并增加耗电；角色新消息会通知你。关闭后仅在应用前台检查定时规则。</p>
       <p className="hint">本次运行有效：应用被系统终止或从最近任务划掉后停止，不会自动重试中断对话。系统省电策略仍可能延迟触发。</p>
       {!app.backgroundSupported() && <p className="hint">当前平台支持前台定时；后台互动目前仅 Android 可用。</p>}
     </div></Section>
-
-    <Section title="用量">
+    </>}
+    {view === 'usage' && <>
+    <Section>
     <div className="settings-card">
-      <div className="card-heading"><span className="card-kicker">调用记录</span><button className="text-button" onClick={() => setShowUsage(value => !value)}>{showUsage ? '收起' : '查看'}</button></div>
-      <p>{usageTotals?.calls ?? 0} 次模型调用 · 已知 {totalTokens.toLocaleString()} tokens</p>
+      <div className="usage-summary">
+        <div><strong>{usageTotals?.calls ?? 0}</strong><span>模型调用</span></div>
+        <div><strong>{totalTokens.toLocaleString()}</strong><span>已知 tokens</span></div>
+        <div><strong>{usageTotals?.unknownCalls ?? 0}</strong><span>用量不完整</span></div>
+      </div>
       {!!usageTotals?.unknownCalls && <p className="hint">{usageTotals.unknownCalls} 次调用的用量不完整；未知部分不计作零。</p>}
-      <p className="hint">统计本机保留的全部调用记录；下方最多展示最近 30 条。</p>
-      {showUsage && <p className="hint">{usageTotals?.purposes.map(item =>
-        `${({ main: '角色回复', triage: '辅助判断', summary: '上下文摘要' } as Record<string, string>)[item.purpose] ?? item.purpose} ${item.calls} 次`).join(' · ')}</p>}
-      {showUsage && <div className="usage-list">{usage.slice(0, 30).map(call => <div key={call.id}>
+      <p className="hint">统计本机保留的全部调用记录，不包含聊天正文或 API Key。</p>
+      <div className="card-heading"><span className="card-kicker">最近调用</span><button className="text-button" type="button" onClick={() => setShowUsage(value => !value)}>{showUsage ? '收起' : '展开'}</button></div>
+      {showUsage && <div className="usage-purpose-filter" role="group" aria-label="按用途筛选">
+        {([['all','全部'],['main','角色回复'],['triage','辅助判断'],['summary','摘要'],['sticker-analysis','表情识图']] as const).map(([id,label]) =>
+          <button type="button" key={id} aria-pressed={usagePurpose===id} onClick={()=>setUsagePurpose(id)}>{label}</button>)}
+      </div>}
+      {showUsage && <div className="usage-list">{visibleUsage.slice(0, 30).map(call => <div key={call.id}>
         <span>{new Date(call.startedAt).toLocaleString()}</span>
-        <strong>{call.purpose} · {call.status}</strong>
+        <strong>{({ main: '角色回复', triage: '辅助判断', summary: '摘要', 'sticker-analysis': '表情识图' } as Record<string, string>)[call.purpose] ?? call.purpose} · {call.status === 'success' ? '成功' : call.status === 'error' ? '失败' : call.status}</strong>
         <small>{call.modelId} · {call.inputTokens === null && call.outputTokens === null ? '用量未知' : `${(call.inputTokens ?? 0) + (call.outputTokens ?? 0)} tokens`}</small>
       </div>)}</div>}
+      {showUsage && !visibleUsage.length && <p className="hint">这个用途还没有调用记录。</p>}
     </div>
     </Section>
-
+    </>}
+    {view === 'backup' && <>
     <ModularBackupPanel app={app} notify={notify} />
     <Section title="整机备份与回退">
     <div className="settings-card">
@@ -1554,13 +1521,13 @@ function Me(props: {
         onChange={event => setBackupPassword(event.target.value)} placeholder="导出至少 8 位；恢复填写原密码" disabled={backupBusy} /></label>
       <p className="hint">请妥善保存密码，遗忘后无法解密。旧版未加密的 JSON 备份仍可恢复。</p>
       <div className="actions">
-        <button disabled={backupBusy} onClick={async () => {
+        <button className="btn-primary" disabled={backupBusy} onClick={async () => {
           setBackupBusy(true)
           try { notify({ text: `备份已写入：${await app.exportBackup(backupPassword)}`, tone: 'ok' }); setBackupPassword('') }
           catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
           finally { setBackupBusy(false) }
         }}>{backupBusy ? '处理中…' : '导出备份'}</button>
-        <label className="file-button primary-file">恢复备份<input type="file" disabled={backupBusy} accept=".json,.yomi" onChange={async event => {
+        <label className="file-button btn-secondary">恢复备份<input type="file" disabled={backupBusy} accept=".json,.yomi" onChange={async event => {
           const input = event.currentTarget
           const file = event.target.files?.[0]
           if (!file) return
@@ -1569,7 +1536,8 @@ function Me(props: {
           if (!confirm('恢复会停止当前生成并替换全部聊天、角色和记忆。API Key 需重新配置。继续？')) return
           setBackupBusy(true)
           try {
-            profileDirty.current = false
+            profileDirtyRef.current = false
+            setProfileDirty(false)
             await app.importBackup(file.name, await file.text(), backupPassword)
             setBackupPassword('')
             notify({ text: '备份已恢复；请检查模型连接并重新填写 Key', tone: 'ok' })
@@ -1581,14 +1549,14 @@ function Me(props: {
       {recovery?.canRollback && <div>
         <p className="hint">保留了一份切换前的本地数据，可切回。回退不会自动恢复聊天生成。</p>
         <div className="actions">
-          <button disabled={backupBusy} onClick={async () => {
+          <button className="btn-quiet" disabled={backupBusy} onClick={async () => {
             if (!confirm('切回上一份本地数据？当前数据会保留为回退副本，正在生成的回复会停止。')) return
             setBackupBusy(true)
-            try { profileDirty.current = false; await app.rollbackData(); notify({ text: '已切回上一份本地数据', tone: 'ok' }) }
+            try { profileDirtyRef.current = false; setProfileDirty(false); await app.rollbackData(); notify({ text: '已切回上一份本地数据', tone: 'ok' }) }
             catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
             finally { setBackupBusy(false) }
           }}>切回上一份数据</button>
-          <button disabled={backupBusy} className="ghost" onClick={async () => {
+          <button disabled={backupBusy} className="btn-danger" onClick={async () => {
             if (!confirm('删除上一份回退副本？当前使用的数据会保留。')) return
             setBackupBusy(true)
             try { await app.discardRecovery(); notify({ text: '回退副本已删除', tone: 'ok' }) }
@@ -1597,7 +1565,7 @@ function Me(props: {
           }}>删除回退副本</button>
         </div>
       </div>}
-      <button className="danger" disabled={backupBusy} onClick={async () => {
+      <button className="btn-danger" disabled={backupBusy} onClick={async () => {
         const answer = prompt('此操作会删除聊天、角色、记忆和本机 API Key。请输入“清空”确认：')
         if (answer !== '清空') return
         try { await app.clearAll(); notify({ text: '全部本地数据已清空', tone: 'ok' }) }
@@ -1605,26 +1573,32 @@ function Me(props: {
       }}>清空全部数据</button>
     </div>
     </Section>
-    <Section title="存储与诊断">
+    </>}
+    {view === 'storage' && <>
+    <Section>
     <div className="settings-card">
       {storage && <>
-        <p>当前数据库 {(storage.bytes / 1048576).toFixed(1)} MB · 可回收 {(storage.freeBytes / 1048576).toFixed(1)} MB</p>
-        <p className="hint">{storage.agents} 个角色 · {storage.conversations} 个会话 · {storage.messages} 条消息 · {storage.memories} 条有效记忆 · {storage.logs} 条运行记录。回退副本单独保留。</p>
+        <div className="storage-summary">
+          <div><strong>{(storage.bytes / 1048576).toFixed(1)} MB</strong><span>数据库</span></div>
+          <div><strong>{(storage.freeBytes / 1048576).toFixed(1)} MB</strong><span>可回收</span></div>
+          <div><strong>{storage.messages.toLocaleString()}</strong><span>消息</span></div>
+        </div>
+        <p className="hint">{storage.agents} 个角色 · {storage.conversations} 个会话 · {storage.memories} 条有效记忆 · {storage.logs} 条运行记录。回退副本单独保留。</p>
       </>}
       <div className="actions">
-        <button disabled={backupBusy} className="ghost" onClick={async () => {
+        <button disabled={backupBusy} className="btn-quiet" onClick={async () => {
           if (!confirm('清理已结束的模型调用与工具记录？聊天和记忆会保留，用量统计也会随记录清理。')) return
           try { await app.clearFinishedLogs(); notify({ text: '已结束的调用与工具记录已清理', tone: 'ok' }) }
           catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
         }}>清理运行记录</button>
-        <button disabled={backupBusy} className="ghost" onClick={async () => {
+        <button disabled={backupBusy} className="btn-quiet" onClick={async () => {
           if (!confirm('压缩本地数据库会停止当前生成，并回收已删除数据的空闲页。继续？')) return
           setBackupBusy(true)
           try { await app.compactStorage(); notify({ text: '数据库已压缩', tone: 'ok' }) }
           catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
           finally { setBackupBusy(false) }
         }}>压缩数据库</button>
-        <button disabled={backupBusy} className="ghost" onClick={async () => {
+        <button disabled={backupBusy} className="btn-quiet" onClick={async () => {
           try { notify({ text: `诊断已写入：${await app.exportDiagnostics()}`, tone: 'ok' }) }
           catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
         }}>导出诊断</button>
@@ -1632,17 +1606,37 @@ function Me(props: {
       <p className="hint">诊断仅包含版本、数量、模型协议、状态和用量，不包含聊天正文、角色资料、模型地址或 API Key。</p>
     </div>
     </Section>
-    <Section title="应用更新"><UpdateSettings /></Section>
-    <Section title="关于 Yomi">
+    </>}
+    {view === 'updates' && <>
+    <Section><UpdateSettings /></Section>
+    </>}
+    {view === 'about' && <>
+    <Section>
     <div className="settings-card about">
-      <p>本地优先的多 Agent 角色聊天。聊天事实保存在设备 SQLite；回复由你配置的模型服务生成。</p>
-      <p>当前版本使用文字记忆和关键词检索，不发送 embedding 请求，支持世界书与角色卡导入，不包含工作型工具。</p>
-      <p className="hint">Android v1 · 数据不会自动上传或云同步</p>
+      <div className="about-hero"><span>Y</span><div><strong>Yomi</strong><small>本地优先的角色对话空间</small></div></div>
+      <div className="about-facts">
+        <div><strong>SQLite</strong><span>聊天保存在设备</span></div>
+        <div><strong>BYOM</strong><span>使用你配置的模型</span></div>
+        <div><strong>Local</strong><span>不自动云同步</span></div>
+      </div>
+      <p>支持多角色私聊、群聊、世界书、角色卡、文字记忆与本地多媒体。模型回复由你选择的服务生成。</p>
+      <p className="hint">Android · 聊天、角色和凭证不会自动上传；具体网络请求以你配置的模型服务为准。</p>
     </div>
     </Section>
-    <div className="version-note">YOMI · ANDROID v1</div>
+    </>}
     {lorebookOpen && <LorebookSheet app={app} close={() => setLorebookOpen(false)} notify={notify} />}
   </section>
+}
+
+function SettingsMenuRow({ Icon, title, description, value, onClick }: {
+  Icon: typeof ChatIcon; title: string; description: string; value?: string; onClick: () => void
+}) {
+  return <button className="settings-menu-row" type="button" onClick={onClick}>
+    <span className="settings-menu-icon"><Icon /></span>
+    <span className="settings-menu-copy"><strong>{title}</strong><small>{description}</small></span>
+    {value && <span className="settings-menu-value">{value}</span>}
+    <ChevronRightIcon className="settings-menu-chevron" />
+  </button>
 }
 
 function ModularBackupPanel({ app, notify }: { app: AppApi; notify: (notice: Notice) => void }) {
@@ -1668,11 +1662,11 @@ function ModularBackupPanel({ app, notify }: { app: AppApi; notify: (notice: Not
       {backupModules[id].label}
     </label>)}</div>
     {!!selected.length && <p className="hint">将包含：{withDependencies(selected).map(id => backupModules[id].label).join('、')}</p>}
-    <button disabled={busy || !selected.length} onClick={() => void run(async () => {
+    <button className="btn-primary" disabled={busy || !selected.length} onClick={() => void run(async () => {
       const file = await app.exportBackupZip(password, selected)
       notify({ text: `模块备份已写入：${file}`, tone: 'ok' })
     })}>导出加密 ZIP</button>
-    <label className="file-button">读取 ZIP 备份<input type="file" accept=".zip" disabled={busy} onChange={event => {
+    <label className="file-button btn-quiet">读取 ZIP 备份<input type="file" accept=".zip" disabled={busy} onChange={event => {
       const file = event.target.files?.[0]; event.target.value = ''
       setPreview(null); setBytes(null)
       if (!file) return
@@ -1691,7 +1685,7 @@ function ModularBackupPanel({ app, notify }: { app: AppApi; notify: (notice: Not
       </label>)}</div>
       <label className="switch-row"><span>同 ID 内容使用备份版本</span><input type="checkbox" disabled={busy} checked={overwrite} onChange={event => setOverwrite(event.target.checked)} /></label>
       <p className="hint">默认保留现有同 ID 内容，只补充缺失记录。不删除本机新增聊天；未选模块的依赖仅补齐缺失项。恢复的主动发言规则默认停用。</p>
-      <button disabled={busy || !restoring.length} onClick={() => void run(async () => {
+      <button className="btn-primary" disabled={busy || !restoring.length} onClick={() => void run(async () => {
         if (!bytes || !confirm('合并所选模块？将停止当前生成并保留一份可回退的数据。')) return
         await app.restoreBackupZip(bytes, password, restoring, overwrite)
         setPreview(null); setBytes(null); setPassword('')
@@ -1702,40 +1696,15 @@ function ModularBackupPanel({ app, notify }: { app: AppApi; notify: (notice: Not
   </div></Section>
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children }: { title?: string; children: React.ReactNode }) {
   return <section className="settings-section">
-    <h4><span>↳</span> {title}</h4>
+    {title && <h4>{title}</h4>}
     {children}
   </section>
 }
 
-async function readImageThumbnail(file: File): Promise<string> {
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(new Error('无法读取图片'))
-    reader.readAsDataURL(file)
-  })
-  return new Promise((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => {
-      const size = 256
-      const scale = Math.min(size / image.width, size / image.height, 1)
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.max(1, Math.round(image.width * scale))
-      canvas.height = Math.max(1, Math.round(image.height * scale))
-      const context = canvas.getContext('2d')
-      if (!context) { reject(new Error('无法处理图片')); return }
-      context.drawImage(image, 0, 0, canvas.width, canvas.height)
-      resolve(canvas.toDataURL('image/jpeg', 0.84))
-    }
-    image.onerror = () => reject(new Error('头像图片格式无效'))
-    image.src = dataUrl
-  })
-}
-
-function Empty({ text, action, onAction }: { text: string; action?: string; onAction?: () => void }) {
-  return <div className="empty"><p>{text}</p>{action && <button onClick={onAction}>{action}</button>}</div>
+function Empty({ text, action, onAction, icon }: { text: string; action?: string; onAction?: () => void; icon?: React.ReactNode }) {
+  return <div className="empty">{icon && <span className="empty-icon">{icon}</span>}<p>{text}</p>{action && <button className="btn-secondary" onClick={onAction}>{action}</button>}</div>
 }
 
 function errorText(error: unknown): string {

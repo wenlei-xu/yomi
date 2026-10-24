@@ -1,4 +1,4 @@
-export const schemaVersion = 13
+export const schemaVersion = 15
 
 export const schema = `
 PRAGMA foreign_keys=ON;
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS conversations(
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK(kind IN ('direct','group','agent_direct','agent_group')),
   title TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '', direct_key TEXT UNIQUE,
+  announcement TEXT NOT NULL DEFAULT '', announcement_updated_at INTEGER NOT NULL DEFAULT 0,
   origin_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
   branch_sequence INTEGER NOT NULL DEFAULT 0,
   next_sequence INTEGER NOT NULL DEFAULT 1, content_revision INTEGER NOT NULL DEFAULT 1,
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS messages(
   request_id TEXT NOT NULL UNIQUE, activity_id TEXT, origin_run_id TEXT,
   deleted INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, media_id TEXT,
   recalled INTEGER NOT NULL DEFAULT 0, edited_at INTEGER NOT NULL DEFAULT 0, edit_history TEXT NOT NULL DEFAULT '[]',
+  sticker INTEGER NOT NULL DEFAULT 0,
   UNIQUE(conversation_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS messages_page ON messages(conversation_id, sequence DESC);
@@ -194,8 +196,12 @@ CREATE TABLE IF NOT EXISTS media_blobs(
 );
 CREATE TABLE IF NOT EXISTS stickers(
   id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', data_url TEXT NOT NULL,
+  content_hash TEXT NOT NULL DEFAULT '', analysis_status TEXT NOT NULL DEFAULT 'pending',
+  analysis_json TEXT NOT NULL DEFAULT '', analysis_error TEXT NOT NULL DEFAULT '',
+  analysis_token TEXT NOT NULL DEFAULT '', analysis_model TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS sticker_content ON stickers(content_hash,analysis_status);
 CREATE INDEX IF NOT EXISTS memories_agent ON memories(agent_id, pinned, updated_at DESC);
 CREATE TABLE IF NOT EXISTS memory_sources(
   memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,

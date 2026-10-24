@@ -140,12 +140,12 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         {error && <p className="update-error" role="alert">{error}</p>}
         {notice && <p role="status">{notice}</p>}
         <div className="dialog-actions">
-          {androidUpdates() && phase === 'idle' && <button disabled={checking} onClick={() => void download()}>下载更新</button>}
-          {phase === 'downloading' && <button onClick={() => { if (transferId.current) void Updater.cancel({requestId:transferId.current}) }}>取消下载</button>}
-          {phase === 'ready' && <button disabled={checking} onClick={() => void install()}>安装更新</button>}
-          {phase === 'ready' && <button className="ghost" disabled={checking} onClick={() => void download()}>重新下载</button>}
-          {phase === 'installing' && <button disabled>正在校验安装包…</button>}
-          <button className="ghost" onClick={() => setVisible(false)}>{phase === 'downloading' ? '收起' : '稍后再说'}</button>
+          {androidUpdates() && phase === 'idle' && <button className="btn-primary" disabled={checking} onClick={() => void download()}>下载更新</button>}
+          {phase === 'downloading' && <button className="btn-quiet" onClick={() => { if (transferId.current) void Updater.cancel({requestId:transferId.current}) }}>取消下载</button>}
+          {phase === 'ready' && <button className="btn-primary" disabled={checking} onClick={() => void install()}>安装更新</button>}
+          {phase === 'ready' && <button className="btn-quiet" disabled={checking} onClick={() => void download()}>重新下载</button>}
+          {phase === 'installing' && <button className="btn-primary" disabled>正在校验安装包…</button>}
+          <button className="btn-quiet" onClick={() => setVisible(false)}>{phase === 'downloading' ? '收起' : '稍后再说'}</button>
         </div>
       </div>
     </div>}
@@ -156,14 +156,14 @@ export function UpdateSettings() {
   const state = useContext(Context)
   if (!state) return null
   return <div className="settings-card">
-    <strong>版本 {state.installed?.versionName ?? '读取中'}{state.installed?.debug ? ' · 测试版' : ''}</strong>
-    <label className="switch-row"><span>自动检查更新</span><input type="checkbox" checked={state.auto} onChange={event => state.setAuto(event.target.checked)}/></label>
-    <div className="actions"><button disabled={state.checking || state.phase === 'downloading' || state.phase === 'installing'} onClick={() => void state.check()}>{state.checking ? '正在检查…' : '检查更新'}</button>
-      {state.release && <button className="ghost" onClick={state.show}>{state.phase === 'downloading' ? `下载中 ${Math.floor(state.progress)}%` : state.phase === 'ready' ? '安装已下载的更新' : '查看新版'}</button>}</div>
+    <div className="update-version-row"><div><span>当前版本</span><strong>{state.installed?.versionName ?? '读取中'}{state.installed?.debug ? ' · 测试版' : ''}</strong></div><span className={state.phase === 'ready' ? 'update-ready' : ''}>{state.phase === 'ready' ? '有更新待安装' : state.phase === 'downloading' ? `下载 ${Math.floor(state.progress)}%` : '已检查'}</span></div>
+    <label className="switch-row"><span>自动检查更新<small>每天最多一次，不打断聊天</small></span><input type="checkbox" checked={state.auto} onChange={event => state.setAuto(event.target.checked)}/></label>
+    <div className="actions"><button className="btn-primary" disabled={state.checking || state.phase === 'downloading' || state.phase === 'installing'} onClick={() => void state.check()}>{state.checking ? '正在检查…' : '检查更新'}</button>
+      {state.release && <button className="btn-secondary" onClick={state.show}>{state.phase === 'downloading' ? `下载中 ${Math.floor(state.progress)}%` : state.phase === 'ready' ? '安装已下载的更新' : '查看新版'}</button>}</div>
     {state.error && <p role="alert" className="update-error">{state.error}</p>}
     {state.notice && <p role="status">{state.notice}</p>}
     <WebUpdateSettings/>
-    <p className="hint">不上传聊天内容。页面和兼容业务逻辑可自动更新；完整 APK 更新需经你确认安装。</p>
+    <p className="hint">页面资源可无感更新并在下次启动生效；完整 APK 更新始终由你确认安装。不会上传聊天内容。</p>
   </div>
 }
 
@@ -180,16 +180,16 @@ function WebUpdateSettings() {
   },[])
   if (!androidUpdates()) return null
   return <div className="web-update-settings">
-    <p>页面资源版本 {status?.activeVersion ?? '…'}{status?.pendingVersion ? ` · 版本 ${status.pendingVersion} 已准备，下次启动生效` : ''}</p>
+    <div className="web-update-heading"><strong>页面资源</strong><span>版本 {status?.activeVersion ?? '…'}{status?.pendingVersion ? ` → ${status.pendingVersion} 待生效` : ''}</span></div>
     <p className="hint">自动检查开启时，在非计费 Wi-Fi 下静默下载页面更新；不会打断当前聊天。原生功能或数据库结构变更仍通过 APK 更新。</p>
     {status?.rolledBack && <p role="status">已退回之前的页面版本。</p>}
-    <div className="actions"><button className="ghost" disabled={busy} onClick={async()=>{
+    <div className="actions"><button className="btn-secondary" disabled={busy} onClick={async()=>{
       setBusy(true);setMessage('')
       try {const value=await Updater.syncWeb();setStatus(value);setMessage(value.skippedNetwork?'请连接非计费 Wi-Fi 后重试。':value.pendingVersion?'已准备好页面更新，下次启动生效。':'当前没有可用的页面更新。')}
       catch {setMessage('页面更新暂不可用，当前版本可继续使用。')}
       finally{setBusy(false)}
     }}>{busy?'正在同步页面更新…':'同步页面更新'}</button>
-    <button className="ghost" disabled={busy} onClick={async()=>{
+    <button className="btn-quiet" disabled={busy} onClick={async()=>{
       if(!confirm('下次启动恢复上一个页面版本？聊天数据保留。'))return
       setBusy(true)
       try{await Updater.rollbackWeb();setStatus(await Updater.webStatus());setMessage('已设置回退，下次完全关闭并重新打开 App 时生效。')}

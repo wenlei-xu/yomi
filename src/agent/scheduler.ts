@@ -14,8 +14,9 @@ export class AgentQueue {
     })
   }
 
-  cancel(conversationId?: string): void {
+  cancel(conversationId?: string, onlyAgentId?: string): void {
     for (const [agentId, jobs] of this.queues) {
+      if (onlyAgentId !== undefined && agentId !== onlyAgentId) continue
       const retained = jobs.filter(job => {
         if (conversationId !== undefined && job.conversationId !== conversationId) return true
         job.resolve()

@@ -10,7 +10,7 @@ export function ConversationMemoryPanel({ app, conversation, members, notify }: 
 }) {
   const [agentId,setAgentId]=useState('')
   useEffect(()=>{if (!members.some(member=>member.id===agentId)) setAgentId(members[0]?.id ?? '')},[members,agentId])
-  return <details className="settings-card">
+  return <details className="settings-card memory-details">
     <summary>摘要时间线与会话关联</summary>
     {!members.length ? <p className="hint">添加角色后可查看摘要、关联会话。</p> : <>
       <label>查看角色<select value={agentId} onChange={event=>setAgentId(event.target.value)}>
@@ -32,6 +32,7 @@ function MemoryDetails({app,conversation,agentId,notify}:{app:AppApi;conversatio
   const [busy,setBusy]=useState(false)
   const [paging,setPaging]=useState(false)
   const [hasMore,setHasMore]=useState(false)
+  const [tab,setTab]=useState<'timeline'|'sources'>('timeline')
   useEffect(()=>{
     let active=true
     setReady(false);setError('');setEntries([])
@@ -46,10 +47,14 @@ function MemoryDetails({app,conversation,agentId,notify}:{app:AppApi;conversatio
   },[app,conversation.id,agentId,revision])
   const dirty=selected.length!==saved.length || selected.some(id=>!saved.includes(id))
   return <>
-    <div className="card-heading"><h4>摘要时间线</h4><button type="button" disabled={busy||paging} onClick={()=>setRevision(value=>value+1)}>重新加载</button></div>
+    <div className="memory-tabs" role="tablist" aria-label="会话记忆分类">
+      <button type="button" role="tab" aria-selected={tab==='timeline'} onClick={()=>setTab('timeline')}>摘要时间线</button>
+      <button type="button" role="tab" aria-selected={tab==='sources'} onClick={()=>setTab('sources')}>关联会话 <span>{saved.length}</span></button>
+    </div>
     {error && <p className="hint" role="alert">{error}</p>}
     {!ready&&!error && <p className="hint" role="status">正在读取摘要和关联…</p>}
-    {ready && <>
+    {ready && tab==='timeline' && <>
+      <div className="card-heading"><h4>摘要时间线</h4><button className="btn-quiet" type="button" disabled={busy||paging} onClick={()=>setRevision(value=>value+1)}>重新加载</button></div>
       <p className="hint">按消息区间查看每次新增段落，展开可看当时的累计摘要。修改历史后，旧记录会标为失效并保留供查阅。</p>
       {!entries.length && <p className="hint">还没有摘要。消息达到 80 条后，角色回应时会自动整理较早的对话，保留最近消息原文。</p>}
       {entries.map(entry=><details className="memory" key={entry.id}>
@@ -59,7 +64,7 @@ function MemoryDetails({app,conversation,agentId,notify}:{app:AppApi;conversatio
         {entry.kind==='segment' && <details><summary>查看当时的累计摘要（第 {entry.cumulativeStartSequence}～{entry.throughSequence} 条）</summary>
           <p style={{whiteSpace:'pre-wrap'}}>{entry.cumulativeBody}</p></details>}
       </details>)}
-      {hasMore && <button type="button" disabled={paging||busy} onClick={async()=>{
+      {hasMore && <button className="btn-secondary" type="button" disabled={paging||busy} onClick={async()=>{
         setPaging(true)
         try {
           const older=await app.summaryTimeline(conversation.id,agentId,entries.at(-1)?.throughSequence)
@@ -67,6 +72,8 @@ function MemoryDetails({app,conversation,agentId,notify}:{app:AppApi;conversatio
           setHasMore(older.length===20)
         }catch(error){notify({text:reason(error),tone:'error'})}finally{setPaging(false)}
       }}>{paging?'正在读取…':'加载更早摘要'}</button>}
+    </>}
+    {ready && tab==='sources' && <>
       <h4>本会话的记忆来源</h4>
       <p className="hint">勾选其他会话后，该角色在这里回应时会参考自己的来源摘要、会话记忆和最近 6 条可见消息。最多关联 8 个来源；其他角色不直接获得这些资料。</p>
       {conversation.originConversationId && <p className="hint">这是重新生成的分支，默认不继承会话关联。手动关联会允许角色参考所选会话的当前背景。</p>}
@@ -77,13 +84,13 @@ function MemoryDetails({app,conversation,agentId,notify}:{app:AppApi;conversatio
         {source.title}{!source.available?' · 已离开，关联暂不生效':''}
       </label>)}
       {!sources.length && <p className="hint">该角色还没有其他可关联的会话。</p>}
-      <div className="actions"><button type="button" disabled={busy||!dirty} onClick={async()=>{
+      <div className="actions"><button className="btn-primary" type="button" disabled={busy||!dirty} onClick={async()=>{
         if(busy)return
         setBusy(true)
         try{await app.setConversationMemorySources(conversation.id,agentId,selected);setSaved([...selected]);notify({text:'会话记忆来源已保存',tone:'ok'})}
         catch(error){notify({text:reason(error),tone:'error'})}finally{setBusy(false)}
       }}>{busy?'保存中…':'保存会话关联'}</button>
-      <button type="button" disabled={busy||!dirty} onClick={()=>setSelected([...saved])}>撤销关联选择</button></div>
+      <button className="btn-quiet" type="button" disabled={busy||!dirty} onClick={()=>setSelected([...saved])}>撤销关联选择</button></div>
       <p className="hint">关联方向为“所选来源 → 本会话”，保存后用于后续生成。取消勾选并保存可停止引用，原会话和记忆会保留。</p>
     </>}
   </>

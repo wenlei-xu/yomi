@@ -147,6 +147,30 @@ public class SecureVaultPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void copyCredential(PluginCall call) {
+        String sourceId = call.getString("sourceId");
+        String providerId = call.getString("providerId");
+        String origin = call.getString("origin");
+        if (sourceId == null || providerId == null || providerId.isBlank() || origin == null) {
+            call.reject("sourceId, providerId and origin are required", "invalid_input");
+            return;
+        }
+        try {
+            Credential credential = readCredential(sourceId);
+            if (credential == null || !credential.origin.equalsIgnoreCase(origin)) {
+                call.reject("Credential is not valid for this origin", "origin_mismatch");
+                return;
+            }
+            prefs().edit().putString(key(providerId), encrypt(credential.secret + "\n" + origin)).apply();
+            JSObject result = new JSObject();
+            result.put("stored", true);
+            call.resolve(result);
+        } catch (Exception error) {
+            call.reject("Unable to protect credential", "vault_error");
+        }
+    }
+
+    @PluginMethod
     public void removeDatabaseFile(PluginCall call) {
         String name = call.getString("name");
         if (name == null || !name.matches("^yomi(?:_store_[a-f0-9]{32})?$")) {
@@ -174,10 +198,15 @@ public class SecureVaultPlugin extends Plugin {
         String providerId = call.getString("providerId");
         String urlText = call.getString("url");
         String body = call.getString("body");
+        String method = call.getString("method", "POST");
         boolean binary = Boolean.TRUE.equals(call.getBoolean("binary"));
         boolean streaming = Boolean.TRUE.equals(call.getBoolean("stream"));
         if (requestId == null || providerId == null || urlText == null || body == null) {
             call.reject("requestId, providerId, url and body are required", "invalid_input");
+            return;
+        }
+        if (!"POST".equals(method) && !"GET".equals(method)) {
+            call.reject("Only GET and POST requests are supported", "invalid_input");
             return;
         }
         ActiveRequest active = new ActiveRequest();
@@ -200,18 +229,20 @@ public class SecureVaultPlugin extends Plugin {
                 connection = (HttpURLConnection) url.openConnection();
                 active.connection = connection;
                 if (active.cancelled) throw new VaultException("Request cancelled", "cancelled");
-                connection.setRequestMethod("POST");
+                connection.setRequestMethod(method);
                 connection.setConnectTimeout(30_000);
                 connection.setReadTimeout(180_000);
                 connection.setInstanceFollowRedirects(false);
-                connection.setDoOutput(true);
+                connection.setDoOutput("POST".equals(method));
                 connection.setRequestProperty("Content-Type", "application/json");
                 connection.setRequestProperty("Accept", streaming ? "text/event-stream, application/json" : "application/json");
                 connection.setRequestProperty("Authorization", "Bearer " + credential.secret);
-                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-                connection.setFixedLengthStreamingMode(bytes.length);
-                try (OutputStream output = connection.getOutputStream()) {
-                    output.write(bytes);
+                if ("POST".equals(method)) {
+                    byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                    connection.setFixedLengthStreamingMode(bytes.length);
+                    try (OutputStream output = connection.getOutputStream()) {
+                        output.write(bytes);
+                    }
                 }
                 int status = connection.getResponseCode();
                 InputStream stream = status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream();
