@@ -12,7 +12,7 @@ async function initializeWebSqlite(): Promise<void> {
   if (!webSqliteReady) {
     webSqliteReady = (async () => {
       const { defineCustomElements } = await import('jeep-sqlite/loader')
-      defineCustomElements(window)
+      await defineCustomElements(window)
       if (!document.querySelector('jeep-sqlite')) {
         const element = document.createElement('jeep-sqlite')
         element.setAttribute('wasmPath', '/assets')
