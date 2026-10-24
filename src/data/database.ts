@@ -152,6 +152,7 @@ export class Database {
       model_bindings: { revision: 'INTEGER NOT NULL DEFAULT 1' },
       actors: {
         speaking_style: "TEXT NOT NULL DEFAULT ''",
+        greeting: "TEXT NOT NULL DEFAULT ''",
         avatar_data: "TEXT NOT NULL DEFAULT ''",
         profile_version: 'INTEGER NOT NULL DEFAULT 1',
         allow_private: 'INTEGER NOT NULL DEFAULT 1',

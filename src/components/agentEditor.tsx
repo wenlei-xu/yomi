@@ -3,7 +3,7 @@ import type { AppApi } from '../app/bootstrap'
 import type { Actor, AgentSettingsUpdate, AgentStatus, ModelBinding, Provider } from '../domain/types'
 import { Avatar } from './avatar'
 import { readImageThumbnail } from './avatarImage'
-import { CloseIcon } from './icons'
+import { BackIcon } from './icons'
 import { ActorWorldBookBindings } from './lorebooks'
 import { OriginalCard } from './cardImport'
 
@@ -24,7 +24,7 @@ export function AgentEditor({ app, initial, close, notify }: {
   app: AppApi; initial: Partial<Actor> | null; close: () => void; notify: Notify
 }) {
   const initialForm = useRef({ name: initial?.name ?? '', bio: initial?.bio ?? '', persona: initial?.persona ?? '',
-    speakingStyle: initial?.speakingStyle ?? '', color: initial?.color ?? '#46a6d9', avatarData: initial?.avatarData ?? '',
+    speakingStyle: initial?.speakingStyle ?? '', greeting: initial?.greeting ?? '', color: initial?.color ?? '#46a6d9', avatarData: initial?.avatarData ?? '',
     allowPrivate: initial?.allowPrivate ?? true, allowGroup: initial?.allowGroup ?? true })
   const [form, setForm] = useState(initialForm.current)
   const [status, setStatus] = useState({ enabled: initial?.enabled ?? true, archived: initial?.archived ?? false })
@@ -42,14 +42,14 @@ export function AgentEditor({ app, initial, close, notify }: {
   const [activeSection, setActiveSection] = useState<'profile' | 'behavior' | 'models' | 'knowledge' | 'status'>('profile')
   const lock = useRef(false)
   const avatarInput = useRef<HTMLInputElement>(null)
-  const dialog = useRef<HTMLDivElement>(null)
+  const screen = useRef<HTMLElement>(null)
   const dirty = JSON.stringify(form) !== JSON.stringify(initialForm.current) || memoDirty || modelsDirty
   const preview: Actor = { ...form, ...status, id: initial?.id ?? 'preview', kind: 'agent',
     profileVersion: initial?.profileVersion ?? 1, createdAt: initial?.createdAt ?? 0, updatedAt: 0 }
 
   useEffect(() => {
     const previous = document.activeElement
-    dialog.current?.focus()
+    screen.current?.focus()
     return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus() }
   }, [])
 
@@ -106,24 +106,18 @@ export function AgentEditor({ app, initial, close, notify }: {
     finally { lock.current = false; setBusy(false) }
   }
 
-  return <div className="sheet-backdrop" onClick={requestClose}>
-    <div ref={dialog} tabIndex={-1} className="sheet tall agent-editor" role="dialog" aria-modal="true" aria-labelledby="agent-editor-title" onClick={event => event.stopPropagation()}
-      onKeyDown={event => {
-        if (event.key === 'Escape') { event.preventDefault(); requestClose(); return }
-        if (event.key !== 'Tab') return
-        const targets = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),summary')]
-          .filter(element => element.getClientRects().length > 0)
-        const first = targets[0], last = targets.at(-1)
-        if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { event.preventDefault(); last?.focus() }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
-      }}>
-      <div className="sheet-handle" />
-      <div className="sheet-heading"><h3 id="agent-editor-title">{initial?.id ? '编辑角色' : '新建角色'}</h3>
-        <button type="button" className="sheet-close" aria-label="关闭角色编辑" disabled={busy || avatarBusy} onClick={requestClose}><CloseIcon /></button></div>
+  return <section ref={screen} tabIndex={-1} className="agent-editor-screen" aria-labelledby="agent-editor-title"
+    onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); requestClose() } }}>
+      <header className="agent-editor-page-header">
+        <button type="button" className="icon-button" aria-label="返回" disabled={busy || avatarBusy} onClick={requestClose}><BackIcon /></button>
+        <h2 id="agent-editor-title">{initial?.id ? '编辑角色' : '新建角色'}</h2>
+        <span aria-hidden="true" />
+      </header>
       {initial?.id && <nav className="agent-editor-tabs" aria-label="角色设置分类">
         {([['profile','资料'],['behavior','互动'],['models','模型'],['knowledge','世界书'],['status','状态']] as const).map(([id,label]) =>
           <button type="button" key={id} aria-pressed={activeSection===id} onClick={() => setActiveSection(id)}>{label}</button>)}
       </nav>}
+      <div className="agent-editor-content">
       {(activeSection === 'profile' || !initial?.id) && <>
       <fieldset className="agent-editor-fields" disabled={busy}>
         <div className="agent-profile-top">
@@ -147,6 +141,8 @@ export function AgentEditor({ app, initial, close, notify }: {
         <label>简介<input value={form.bio} onChange={event => setForm(current => ({ ...current, bio: event.target.value }))} placeholder="一句话介绍这个角色" /></label>
         <label>人设<textarea rows={5} value={form.persona} onChange={event => setForm(current => ({ ...current, persona: event.target.value }))} placeholder="身份、性格、经历，以及与你的关系" /></label>
         <label>说话风格<textarea rows={2} value={form.speakingStyle} onChange={event => setForm(current => ({ ...current, speakingStyle: event.target.value }))} placeholder="例如：短句、自然，偶尔开玩笑" /></label>
+        <label>开场白<textarea rows={3} maxLength={8000} value={form.greeting} onChange={event => setForm(current => ({ ...current, greeting: event.target.value }))} placeholder="角色第一次与你聊天时说的话（可留空）" />
+          <small className="hint">会显示在空白私聊中，点击后作为角色的第一条消息发送。导入角色卡的开场白仍保留为其他选项。</small></label>
       </fieldset>
       </>}
       {activeSection === 'behavior' && initial?.id && <fieldset className="agent-editor-fields agent-editor-section" disabled={busy}>
@@ -201,9 +197,9 @@ export function AgentEditor({ app, initial, close, notify }: {
           }}>删除角色</button>
         </div>
       </div>}
+      </div>
       {activeSection !== 'status' && <div className="agent-editor-footer"><p>保存后，人设变化会从下一条消息开始生效。</p>
         <button type="button" className="wide-primary" disabled={busy || avatarBusy || !form.name.trim() || (!dirty && !!initial?.id)} onClick={() => void save()}>
           {busy ? '正在保存…' : initial?.id ? dirty ? '保存修改' : '已保存' : '创建角色'}</button></div>}
-    </div>
-  </div>
+  </section>
 }

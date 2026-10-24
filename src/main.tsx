@@ -6,6 +6,7 @@ import { App as CapacitorApp } from '@capacitor/app'
 import { createApp, type AppApi, type RecoveryInfo } from './app/bootstrap'
 import { Avatar, AvatarStack, conversationAvatar } from './components/avatar'
 import { AgentEditor } from './components/agentEditor'
+import { AgentProfile } from './components/agentProfile'
 import { readImageThumbnail } from './components/avatarImage'
 import {
   AgentsIcon,
@@ -63,6 +64,7 @@ import './styles.css'
 import './components/roleplay.css'
 import './components/settings.css'
 import './components/agents.css'
+import './components/agentProfile.css'
 import './components/expressions.css'
 import './components/groupInfo.css'
 
@@ -349,6 +351,7 @@ function Chat(props: {
   const [jumpId, setJumpId] = useState<string | null>(null)
   const targetMessageId = jumpId ?? requestedTarget
   const [chatMediaActor,setChatMediaActor]=useState<Actor|null>(null)
+  const [profileAgent, setProfileAgent] = useState<Actor | null>(null)
   const [editingChatAgent, setEditingChatAgent] = useState<Actor | null>(null)
   const [agentStatusBusy, setAgentStatusBusy] = useState(false)
   const [expressionOpen,setExpressionOpen]=useState(false)
@@ -489,9 +492,12 @@ function Chat(props: {
   return <section className="chat">
     <header className="chat-header">
       <button className="icon-button" onClick={close} aria-label="返回"><BackIcon /></button>
-      {directAgent && <button className="chat-role-avatar" aria-label={`编辑角色 ${directAgent.name}`} onClick={() => setEditingChatAgent(directAgent)}>
+      {directAgent && <button className="chat-role-avatar" aria-label={`查看角色资料 ${directAgent.name}`} onClick={() => setProfileAgent(directAgent)}>
         <Avatar actor={directAgent} size={36} showStatus={false} /></button>}
-      <button className="title-button" onClick={() => { setGroupInfoPage('home'); setShowInfo(true) }}>
+      <button className="title-button" onClick={() => {
+        if (conversation.kind === 'direct' && directAgent) setProfileAgent(directAgent)
+        else { setGroupInfoPage('home'); setShowInfo(true) }
+      }}>
         <strong>{conversation.title}</strong>
         <span>
           {readOnly ? '角色私聊 · 只读旁观' : conversation.kind === 'group'
@@ -639,7 +645,7 @@ function Chat(props: {
         </article>
       })}
       {!readOnly && !messages.length && conversation.kind==='direct' && members[0] &&
-        <Greetings app={app} actorId={members[0].id} conversationId={conversationId} notify={notify}/>}
+        <Greetings app={app} actorId={members[0].id} conversationId={conversationId} version={version} notify={notify}/>}
       {!messages.length && <Empty text={readOnly ? '角色还没有开始私聊。' : '还没有消息，先打个招呼吧。'} />}
       {hasNewer && <button className="load-newer" onClick={() => void loadNewer()}>有新消息 · 跳到最新</button>}
       {streaming.map(item => <article className="message streaming-message" key={`stream-${item.agentId}`} aria-live="polite">
@@ -650,6 +656,9 @@ function Chat(props: {
     </div>
     {chatMediaActor && <MediaSheet app={app} agent={chatMediaActor} conversationId={conversationId} notify={notify} close={()=>setChatMediaActor(null)}/>}
     {editingChatAgent && <AgentEditor key={editingChatAgent.id} app={app} initial={editingChatAgent} close={() => setEditingChatAgent(null)} notify={notify} />}
+    {profileAgent && <AgentProfile actor={profileAgent} close={() => setProfileAgent(null)}
+      edit={() => { setEditingChatAgent(profileAgent); setProfileAgent(null) }}
+      openMedia={() => { setChatMediaActor(profileAgent); setProfileAgent(null) }} />}
     {!readOnly && <form className={'chat-composer' + (expressionOpen ? ' expressions-open' : '')} onSubmit={event => { event.preventDefault(); void send() }}>
       {quoted && <div className="composer-quote"><span>回复 {quoted.authorName}：{quoted.body.slice(0, 80)}</span><button type="button" onClick={() => setQuoted(null)}>×</button></div>}
       {selectedMentions.length > 0 && <div className="mention-chips">
@@ -713,7 +722,7 @@ function Chat(props: {
       app={app} version={version} conversation={conversation} initialPage={groupInfoPage}
       close={() => setShowInfo(false)} deleted={() => { setShowInfo(false); close() }}
       search={() => { setShowInfo(false); setChatSearch(true) }}
-      editAgent={agent => { setShowInfo(false); setEditingChatAgent(agent) }}
+      viewAgent={agent => { setShowInfo(false); setProfileAgent(agent) }}
       renderAdvanced={(room, actors) => <>
         <WorldBookBindings app={app} conversationId={room.id} notify={notify}/>
         <ConversationNotes app={app} conversation={room} members={actors} notify={notify}/>
@@ -725,7 +734,7 @@ function Chat(props: {
       app={app}
       version={version}
       conversation={conversation}
-      editAgent={agent => { setShowInfo(false); setEditingChatAgent(agent) }}
+      viewAgent={agent => { setShowInfo(false); setProfileAgent(agent) }}
       close={() => setShowInfo(false)}
       notify={notify}
     />)}
@@ -733,7 +742,8 @@ function Chat(props: {
       <div className="sheet menu-sheet action-sheet" onClick={event => event.stopPropagation()}>
         <div className="sheet-handle" />
         <h3>{conversation.title}</h3>
-        {directAgent && <button className="sheet-action" onClick={() => { setEditingChatAgent(directAgent); setShowMore(false) }}>编辑角色头像与资料</button>}
+        {directAgent && <button className="sheet-action" onClick={() => { setProfileAgent(directAgent); setShowMore(false) }}>查看角色资料</button>}
+        {conversation.kind === 'direct' && <button className="sheet-action" onClick={() => { setShowInfo(true); setShowMore(false) }}>会话资料与设置</button>}
         <button className="sheet-action" onClick={() => {setChatSearch(true);setShowMore(false)}}>搜索本会话</button>
         <button className="sheet-action" onClick={async () => {
           try { notify({ text: `已导出：${await app.exportConversation(conversationId, 'markdown')}`, tone: 'ok' }) }
@@ -792,11 +802,11 @@ function ConversationSheet(props: {
   app: AppApi
   version: number
   conversation: Conversation
-  editAgent: (agent: Actor) => void
+  viewAgent: (agent: Actor) => void
   close: () => void
   notify: (notice: Notice) => void
 }) {
-  const { app, version, conversation, editAgent, close, notify } = props
+  const { app, version, conversation, viewAgent, close, notify } = props
   const [pinned, setPinned] = useState(conversation.pinned)
   const [muted, setMuted] = useState(conversation.muted)
   const [autonomyPaused, setAutonomyPaused] = useState(conversation.autonomyPaused)
@@ -834,12 +844,12 @@ function ConversationSheet(props: {
         <h2>{conversation.title}</h2>
         <p>{conversation.topic || (conversation.kind === 'group' ? `${detailMembers.length} 位角色在这个群聊` : '单聊')}</p>
       </div>
-      <div className="conversation-section-heading"><span>会话角色</span><small>点击可编辑资料与状态</small></div>
+      <div className="conversation-section-heading"><span>会话角色</span><small>点击查看角色资料</small></div>
       <div className="conversation-role-list" aria-label="管理会话角色">
-        {detailMembers.map(agent => <button type="button" key={agent.id} onClick={() => editAgent(agent)}>
+        {detailMembers.map(agent => <button type="button" key={agent.id} onClick={() => viewAgent(agent)}>
           <Avatar actor={agent} size={38} showStatus={false} />
           <span><strong>{agent.name}</strong><small>{agent.archived ? '已归档' : agent.enabled ? '已启用' : '已停用'}</small></span>
-          <span>编辑资料 <ChevronRightIcon /></span>
+          <span>查看资料 <ChevronRightIcon /></span>
         </button>)}
       </div>
       <div className="conversation-section-heading"><span>聊天设置</span><small>开关修改后会立即保存</small></div>

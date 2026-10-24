@@ -40,10 +40,10 @@ export function OriginalCard({app,actorId,notify}:{app:AppApi;actorId:string;not
   </details>
 }
 
-export function Greetings({app,actorId,conversationId,notify}:{app:AppApi;actorId:string;conversationId:string;notify:Notify}) {
+export function Greetings({app,actorId,conversationId,version,notify}:{app:AppApi;actorId:string;conversationId:string;version:number;notify:Notify}) {
   const [items,setItems]=useState<string[]>([])
   const [busy,setBusy]=useState(false)
-  useEffect(()=>{let active=true;void app.greetings(actorId).then(v=>{if(active)setItems(v)},e=>notify({text:errorText(e),tone:'error'}));return()=>{active=false}},[app,actorId])
+  useEffect(()=>{let active=true;void app.greetings(actorId).then(v=>{if(active)setItems(v)},e=>notify({text:errorText(e),tone:'error'}));return()=>{active=false}},[app,actorId,version])
   if(!items.length)return null
   return <div className="settings-card"><h4>选择角色开场白</h4>{items.map((text,i)=><button className="greeting-choice" key={i} disabled={busy} onClick={async()=>{
     setBusy(true);try{await app.startGreeting(conversationId,text)}catch(e){notify({text:errorText(e),tone:'error'})}finally{setBusy(false)}

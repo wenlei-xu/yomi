@@ -54,6 +54,7 @@ export interface Actor {
   bio: string
   persona: string
   speakingStyle: string
+  greeting: string
   avatarData: string
   enabled: boolean
   archived: boolean

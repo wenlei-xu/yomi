@@ -9,9 +9,9 @@ type Notify = (notice: { text: string; tone: 'ok' | 'error' }) => void
 const headings: Record<Page, string> = { home: '群聊信息', name: '群聊名称', announcement: '群公告', topic: '聊天话题', add: '添加群成员', remove: '移出群成员', advanced: '角色互动设置', history: '聊天记录' }
 const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败'
 
-export function GroupInfo({ app, version, conversation, initialPage = 'home', close, deleted, search, editAgent, renderAdvanced, notify }: {
+export function GroupInfo({ app, version, conversation, initialPage = 'home', close, deleted, search, viewAgent, renderAdvanced, notify }: {
   app: AppApi; version: number; conversation: Conversation; initialPage?: 'home' | 'announcement'
-  close: () => void; deleted: () => void; search: () => void; editAgent: (actor: Actor) => void
+  close: () => void; deleted: () => void; search: () => void; viewAgent: (actor: Actor) => void
   renderAdvanced: (room: Conversation, members: Actor[]) => ReactNode; notify: Notify
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -99,7 +99,7 @@ export function GroupInfo({ app, version, conversation, initialPage = 'home', cl
         {error && <p className="group-info-error" role="alert">{error}</p>}
         {page === 'home' && <>
           <section className="group-members-grid" aria-label="群成员">
-            {members.map(actor => actor.kind === 'agent' ? <button type="button" className="group-member" key={actor.id} disabled={busy} aria-label={`查看成员 ${actor.name}`} onClick={() => editAgent(actor)}>
+            {members.map(actor => actor.kind === 'agent' ? <button type="button" className="group-member" key={actor.id} disabled={busy} aria-label={`查看角色资料 ${actor.name}`} onClick={() => viewAgent(actor)}>
               <Avatar actor={actor} size={46} showStatus={false}/><span>{actor.name}</span>{(!actor.enabled || actor.archived) && <small>{actor.archived ? '已归档' : '已停用'}</small>}
             </button> : <div className="group-member" key={actor.id}><Avatar actor={actor} size={46} showStatus={false}/><span>{actor.name || '我'}</span><small>我</small></div>)}
             <button type="button" className="group-member group-member-action" aria-label="添加群成员" disabled={busy || loading || !capacity} onClick={() => navigate('add')}><span className="group-member-icon"><PlusIcon/></span><span>添加</span></button>

@@ -366,6 +366,7 @@ export class Repository {
         bio: input.bio ?? current?.bio ?? '',
         persona: input.persona ?? current?.persona ?? '',
         speakingStyle: input.speakingStyle ?? current?.speakingStyle ?? '',
+        greeting: input.greeting ?? current?.greeting ?? '',
         avatarData: input.avatarData ?? current?.avatarData ?? '',
         enabled: input.enabled ?? current?.enabled ?? true,
         archived: input.archived ?? current?.archived ?? false,
@@ -376,21 +377,22 @@ export class Repository {
         updatedAt: timestamp
       }
       if (saved.archived) saved.enabled = false
+      if (saved.greeting.length > 8000) throw new Error('开场白不能超过 8,000 字')
       const changed = current && (['name', 'bio', 'persona', 'speakingStyle', 'enabled', 'archived', 'allowPrivate', 'allowGroup'] as const)
         .some(key => current[key] !== saved[key])
       if (changed) saved.profileVersion++
       await db.run(
       `INSERT INTO actors(
-        id,kind,name,color,bio,persona,speaking_style,avatar_data,enabled,archived,
+        id,kind,name,color,bio,persona,speaking_style,greeting,avatar_data,enabled,archived,
         profile_version,allow_private,allow_group,created_at,updated_at
-      ) VALUES (?,'agent',?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES (?,'agent',?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET name=excluded.name,color=excluded.color,bio=excluded.bio,
         persona=excluded.persona,speaking_style=excluded.speaking_style,
-        avatar_data=excluded.avatar_data,enabled=excluded.enabled,archived=excluded.archived,
+        greeting=excluded.greeting,avatar_data=excluded.avatar_data,enabled=excluded.enabled,archived=excluded.archived,
         profile_version=excluded.profile_version,allow_private=excluded.allow_private,
         allow_group=excluded.allow_group,updated_at=excluded.updated_at`,
       [saved.id, saved.name, saved.color, saved.bio, saved.persona, saved.speakingStyle,
-        saved.avatarData, saved.enabled ? 1 : 0, saved.archived ? 1 : 0,
+        saved.greeting, saved.avatarData, saved.enabled ? 1 : 0, saved.archived ? 1 : 0,
         saved.profileVersion, saved.allowPrivate ? 1 : 0, saved.allowGroup ? 1 : 0,
         saved.createdAt, timestamp]
       )
@@ -1558,10 +1560,15 @@ export class Repository {
 
   async greetings(actorId: string): Promise<string[]> {
     const source = await this.characterSource(actorId)
-    if (!source) return []
     const actor = await this.getActor(actorId)
     const user = await this.getActor(localUserId)
-    return parseCharacterCard(source.json).greetings.map(t => replaceCardMacros(t,actor?.name ?? '',user?.name ?? '我'))
+    const ownGreeting = actor?.greeting.trim()
+      ? [replaceCardMacros(actor.greeting.trim(), actor.name, user?.name ?? '我')]
+      : []
+    const cardGreetings = source
+      ? parseCharacterCard(source.json).greetings.map(t => replaceCardMacros(t, actor?.name ?? '', user?.name ?? '我'))
+      : []
+    return [...new Set([...ownGreeting, ...cardGreetings])]
   }
 
   async startGreeting(conversationId: string, body: string): Promise<void> {
@@ -1571,11 +1578,14 @@ export class Repository {
         throw new Error('开场白只能用于空的角色单聊')
       }
       const actorId = c.members.find(v => v !== localUserId)!
-      const a = (await rows(db,'SELECT name FROM actors WHERE id=?',[actorId]))[0]
+      const a = (await rows(db,'SELECT name,greeting FROM actors WHERE id=?',[actorId]))[0]
       const source = (await rows(db,'SELECT source_json FROM character_cards WHERE actor_id=?',[actorId]))[0]
       const user = (await rows(db,'SELECT name FROM actors WHERE id=?',[localUserId]))[0]
-      const choices = source ? parseCharacterCard(text(source.source_json)).greetings
-        .map(t => replaceCardMacros(t,text(a.name),text(user.name))) : []
+      const choices = [...new Set([
+        text(a.greeting).trim() ? replaceCardMacros(text(a.greeting).trim(), text(a.name), text(user.name)) : '',
+        ...(source ? parseCharacterCard(text(source.source_json)).greetings
+          .map(t => replaceCardMacros(t,text(a.name),text(user.name))) : [])
+      ].filter(Boolean))]
       if (!choices.includes(body)) throw new Error('开场白不存在')
       const timestamp=now()
       await db.run(`INSERT INTO messages(id,conversation_id,author_id,author_name,author_kind,body,sequence,request_id,created_at)
@@ -3310,6 +3320,7 @@ function actor(row: Row): Actor {
     id: text(row.id), kind: text(row.kind) as Actor['kind'], name: text(row.name),
     color: text(row.color), bio: text(row.bio), persona: text(row.persona),
     speakingStyle: text(row.speaking_style), avatarData: text(row.avatar_data),
+    greeting: text(row.greeting),
     enabled: bool(row.enabled), archived: bool(row.archived),
     profileVersion: num(row.profile_version), allowPrivate: bool(row.allow_private),
     allowGroup: bool(row.allow_group), createdAt: num(row.created_at), updatedAt: num(row.updated_at)

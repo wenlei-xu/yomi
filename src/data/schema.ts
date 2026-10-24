@@ -1,4 +1,4 @@
-export const schemaVersion = 15
+export const schemaVersion = 16
 
 export const schema = `
 PRAGMA foreign_keys=ON;
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS actors(
   id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('human','agent')),
   name TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#2563eb',
   bio TEXT NOT NULL DEFAULT '', persona TEXT NOT NULL DEFAULT '',
-  speaking_style TEXT NOT NULL DEFAULT '', avatar_data TEXT NOT NULL DEFAULT '',
+  speaking_style TEXT NOT NULL DEFAULT '', greeting TEXT NOT NULL DEFAULT '', avatar_data TEXT NOT NULL DEFAULT '',
   enabled INTEGER NOT NULL DEFAULT 1, archived INTEGER NOT NULL DEFAULT 0,
   profile_version INTEGER NOT NULL DEFAULT 1, allow_private INTEGER NOT NULL DEFAULT 1,
   allow_group INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
