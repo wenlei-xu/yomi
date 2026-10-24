@@ -1,0 +1,42 @@
+{
+  "checkedAt": "2026-10-23T09:35:29.676997+00:00",
+  "apk": "android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+  "apkSha256": "AFDEF81628CCF5E11803D3801934C1AA45C9D8EDB53635A12ADA0796439CD04F",
+  "typecheck": "passed",
+  "androidBuild": "passed",
+  "install": "adb install -r succeeded",
+  "device": "emulator-5554",
+  "regressions": 30,
+  "catalog": {
+    "active": "yomi",
+    "previous": null,
+    "pending": null,
+    "phase": "idle",
+    "revision": 15,
+    "note": ""
+  },
+  "catalogIntegrity": "ok",
+  "queuedGarbage": 0,
+  "mainIntegrity": "ok",
+  "foreignKeyViolations": [],
+  "postCheckCounts": {
+    "actors": 1,
+    "messages": 0,
+    "conversations": 0
+  },
+  "nativeChecks": {
+    "stagingActivation": "passed",
+    "invalidImportPreservesActive": "passed",
+    "rollbackToOriginal": "passed",
+    "retainedCopyDeletion": "passed; only yomi and catalog files remain",
+    "preparedWithoutCommitRecovery": "passed; original retained after WebView reload",
+    "missingActiveFallback": "passed; previous generation opened after reload",
+    "vacuumOutsideTransaction": "passed",
+    "diagnosticExport": "passed",
+    "catalogFilenameDeletion": "rejected",
+    "fourTabsAfterReload": "passed"
+  },
+  "realProviders": "not tested",
+  "realDevice": "not tested",
+  "fullFaultMatrix": "not run"
+}

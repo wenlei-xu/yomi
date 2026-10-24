@@ -1,0 +1,30 @@
+{
+  "checkedAt": "2026-10-23T21:14:00+08:00",
+  "apk": "android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+  "apkSha256": "677CA0848535A713DBCE2FDD5CFB7AA83C5E665C5E893DBC4D80EF99DECACEC6",
+  "typecheck": "passed",
+  "agentRegressions": 39,
+  "androidBuild": "passed",
+  "install": "adb install -r succeeded",
+  "device": "emulator-5554",
+  "activeDataFile": "yomi",
+  "schemaVersions": [
+    2,
+    3,
+    5,
+    6,
+    7
+  ],
+  "integrity": "ok",
+  "foreignKeyViolations": [],
+  "counts": {
+    "actors": 1,
+    "conversations": 0,
+    "messages": 0,
+    "retry_jobs": 0
+  },
+  "nativeRetryInjectionAndRestart": "not executed; automatic approval review returned blocked by policy",
+  "realProviders": "not tested",
+  "realDevice": "not tested",
+  "fullFaultMatrix": "not run"
+}

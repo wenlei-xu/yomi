@@ -1,0 +1,45 @@
+{
+  "name": "yomi",
+  "version": "1.0.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host --port 5188 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test:agent": "node scripts/audit-agent.cjs",
+    "android": "vite build && cap sync android && cd android && gradlew.bat assembleDebug",
+    "android:release": "node scripts/release.cjs",
+    "test:local": "node scripts/audit-local-features.cjs",
+    "test:memory": "node scripts/check-memory-links.cjs",
+    "test:messaging": "node scripts/check-messaging.cjs",
+    "signing:init": "node scripts/init-signing.cjs",
+    "release": "node scripts/release.cjs",
+    "release:web": "node scripts/release-web.cjs",
+    "oss:configure": "node scripts/oss-run.cjs Configure",
+    "release:upload": "node scripts/oss-run.cjs Upload",
+    "test:updates": "node scripts/check-updates.cjs",
+    "test:updates:fixtures": "node scripts/prepare-update-tests.cjs",
+    "release:prepare-upload": "node scripts/prepare-upload.cjs"
+  },
+  "dependencies": {
+    "@capacitor-community/sqlite": "8.1.1",
+    "@capacitor/android": "^8.3.3",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/cli": "^8.3.3",
+    "@capacitor/core": "^8.3.3",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/keyboard": "^8.0.0",
+    "ali-oss": "6.23.0",
+    "fflate": "0.8.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

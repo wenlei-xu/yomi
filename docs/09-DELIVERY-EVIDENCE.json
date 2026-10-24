@@ -1,0 +1,38 @@
+{
+  "checkedAt": "2026-10-23T09:18:59.573686+00:00",
+  "apk": "android\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+  "apkSha256": "0092E56C33F015C25F4C7971FFC933CBBBEE2F8F86171F4E4D9F87A4AC105F15",
+  "typecheck": "passed",
+  "androidBuild": "passed",
+  "install": "adb install -r succeeded",
+  "device": "emulator-5554",
+  "migrations": [
+    2,
+    3,
+    5,
+    6
+  ],
+  "sqliteVersion": "3.43.1",
+  "integrity": [
+    "ok"
+  ],
+  "foreignKeyViolations": [],
+  "triggers": [
+    "invalidate_memory_on_message_delete",
+    "invalidate_memory_on_message_tombstone"
+  ],
+  "regressions": 29,
+  "nativeEncryptedBackupExport": "passed via settings UI; empty database only",
+  "nativeEncryptedBackupRestore": "passed via file input; empty database only",
+  "realProviders": "not tested",
+  "realDevice": "not tested",
+  "fullFaultMatrix": "not run",
+  "nativeComposerRefresh": "passed; unsaved text survives application refresh before autosave",
+  "nativeCommandIdempotence": "passed; two sends with the same command ID create one message",
+  "postCheckCounts": {
+    "actors": 1,
+    "conversations": 0,
+    "messages": 0
+  },
+  "nativeWebViewReload": "passed; orphan native handles reconciled; four tabs present after reload"
+}

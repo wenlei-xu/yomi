@@ -1,0 +1,15 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "oss:PutObject",
+        "oss:PutObjectAcl"
+      ],
+      "Resource": [
+        "acs:oss:*:*:yomi-xu/releases/*"
+      ]
+    }
+  ]
+}

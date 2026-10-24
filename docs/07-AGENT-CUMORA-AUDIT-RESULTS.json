@@ -1,0 +1,43 @@
+{
+  "reproducedFindings": [
+    {
+      "finding": "agent-only inbox never dispatched",
+      "started": 0,
+      "pending": true
+    },
+    {
+      "finding": "next human input hides prior speaker from current round",
+      "boundary": 1,
+      "replySequence": 3
+    },
+    {
+      "finding": "Agent A can delete Agent B automatic memory if ID is known",
+      "outcome": "已删除自己记录的记忆"
+    },
+    {
+      "finding": "non-message tool writes bypass stop epoch",
+      "lateMemoryPersisted": true
+    },
+    {
+      "finding": "summary coverage exceeds actual source",
+      "claimedThrough": 426,
+      "actualThrough": 400
+    },
+    {
+      "finding": "search bypasses round visibility boundary",
+      "result": "#2 我: FUTURE SECRET"
+    },
+    {
+      "finding": "same memory tool call has repeated effects",
+      "memoryRows": 2
+    },
+    {
+      "finding": "archived or disabled agent can publish stale in-flight reply",
+      "status": "sent"
+    },
+    {
+      "finding": "HELD cannot advance seen boundary within run",
+      "heldAfterReread": true
+    }
+  ]
+}
