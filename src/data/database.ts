@@ -1,9 +1,32 @@
+import { Capacitor } from '@capacitor/core'
 import { CapacitorSQLite, SQLiteConnection, type SQLiteDBConnection } from '@capacitor-community/sqlite'
 import { schema, schemaVersion } from './schema'
 import { removeClosedDatabase } from '../platform/dataFiles'
 
 export type Row = Record<string, unknown>
 const sqliteOwner = new SQLiteConnection(CapacitorSQLite)
+let webSqliteReady: Promise<void> | null = null
+
+async function initializeWebSqlite(): Promise<void> {
+  if (Capacitor.getPlatform() !== 'web') return
+  if (!webSqliteReady) {
+    webSqliteReady = (async () => {
+      const { defineCustomElements } = await import('jeep-sqlite/loader')
+      defineCustomElements(window)
+      if (!document.querySelector('jeep-sqlite')) {
+        const element = document.createElement('jeep-sqlite')
+        element.setAttribute('wasmPath', '/assets')
+        document.body.append(element)
+      }
+      await customElements.whenDefined('jeep-sqlite')
+      await CapacitorSQLite.initWebStore()
+    })().catch(error => {
+      webSqliteReady = null
+      throw error
+    })
+  }
+  await webSqliteReady
+}
 
 export class Database {
   private queue: Promise<unknown> = Promise.resolve()
@@ -22,6 +45,7 @@ export class Database {
   }
 
   async open(): Promise<void> {
+    await initializeWebSqlite()
     const sqlite = this.sqlite()
     // A WebView reload discards JS handles while the native plugin can retain
     // them. Reconcile that registry before creating or retrieving a handle.
