@@ -33,7 +33,7 @@ import { MessageSearch } from './components/messageSearch'
 import { ConversationMemoryPanel } from './components/conversationMemory'
 import { MarkdownText, EmoticonText } from './components/markdown'
 import { LorebookSheet,WorldBookBindings } from './components/lorebooks'
-import { MediaSheet,MediaAttachment,MessageSpeech } from './components/media'
+import { MediaSheet,MediaAttachment,MessageAudio } from './components/media'
 import { ChatExpressionPicker } from './components/chatExpressions'
 import { ChatInput, type ChatInputHandle } from './components/chatInput'
 import { ModelSettings } from './components/modelSettings'
@@ -357,6 +357,10 @@ function Chat(props: {
   const [expressionOpen,setExpressionOpen]=useState(false)
   const [messageMenuId, setMessageMenuId] = useState<string | null>(null)
   const [messageReactionId, setMessageReactionId] = useState<string | null>(null)
+  const [messageMenuPlacement, setMessageMenuPlacement] = useState<'above' | 'below'>('below')
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const longPressStart = useRef<{ x: number; y: number } | null>(null)
+  const longPressTriggered = useRef(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const targetRef = useRef<HTMLElement>(null)
   const chatInputRef = useRef<ChatInputHandle>(null)
@@ -365,6 +369,45 @@ function Chat(props: {
   const sendingRef = useRef(false)
 
   useEffect(() => { setExpressionOpen(false); setMessageMenuId(null); setMessageReactionId(null) }, [conversationId, readOnly])
+  useEffect(() => () => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current)
+  }, [])
+
+  const clearMessageLongPress = () => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current)
+    longPressTimer.current = null
+    longPressStart.current = null
+  }
+  const showMessageActions = (messageId: string, bubble?: HTMLDivElement) => {
+    const stack = bubble?.closest<HTMLElement>('.message-stack')
+    const viewport = bubble?.closest<HTMLElement>('.messages')
+    if (stack && viewport) {
+      const stackRect = stack.getBoundingClientRect()
+      const viewportRect = viewport.getBoundingClientRect()
+      const spaceAbove = stackRect.top - viewportRect.top
+      const spaceBelow = viewportRect.bottom - stackRect.bottom
+      setMessageMenuPlacement(spaceBelow < 260 && spaceAbove > spaceBelow ? 'above' : 'below')
+    }
+    longPressTriggered.current = true
+    setMessageMenuId(messageId)
+    setMessageReactionId(null)
+  }
+  const startMessageLongPress = (event: React.PointerEvent<HTMLDivElement>, messageId: string) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    if (event.target instanceof Element && event.target.closest('button:not(.media-image-button),a,audio,input,textarea,video')) return
+    clearMessageLongPress()
+    longPressTriggered.current = false
+    longPressStart.current = { x: event.clientX, y: event.clientY }
+    const bubble = event.currentTarget
+    longPressTimer.current = setTimeout(() => {
+      longPressTimer.current = null
+      showMessageActions(messageId, bubble)
+    }, 500)
+  }
+  const moveMessageLongPress = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = longPressStart.current
+    if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 12) clearMessageLongPress()
+  }
 
   useEffect(() => {
     let active = true
@@ -550,7 +593,10 @@ function Chat(props: {
       } catch (reason) { notify({ text: errorText(reason), tone: 'error' }) }
       finally { setRefreshing(false) }
     }}>{refreshing ? '正在同步…' : '有新回复 · 刷新'}</button>}
-    <div className="messages" onClick={() => { setMentionQuery(null); setExpressionOpen(false); setMessageMenuId(null); setMessageReactionId(null); chatInputRef.current?.blur() }}>
+    <div className="messages" onPointerDownCapture={() => { longPressTriggered.current = false }} onClick={() => {
+      if (longPressTriggered.current) { longPressTriggered.current = false; return }
+      setMentionQuery(null); setExpressionOpen(false); setMessageMenuId(null); setMessageReactionId(null); chatInputRef.current?.blur()
+    }}>
       {hasOlder && <button className="load-older" onClick={() => void loadOlder()}>加载更早消息</button>}
       {messages.map(item => {
         const mine = item.authorId === 'local-user'
@@ -578,7 +624,32 @@ function Chat(props: {
               <small>{mine ? '你' : author?.name ?? item.authorName}</small>
               <span>{formatClock(item.createdAt)}{item.editedAt && !item.recalled ? ' · 已编辑' : ''}{item.recalled ? ' · 已撤回' : ''}</span>
             </div>
-            <div className={'message-bubble' + (stickerMessage ? ' sticker-bubble' : '')}>
+            <div className={'message-bubble' + (stickerMessage ? ' sticker-bubble' : '')}
+              tabIndex={!item.deleted && !item.recalled ? 0 : undefined}
+              aria-haspopup={!item.deleted && !item.recalled ? 'menu' : undefined}
+              aria-expanded={!item.deleted && !item.recalled ? messageMenuId === item.id : undefined}
+              onPointerDown={!item.deleted && !item.recalled ? event => startMessageLongPress(event, item.id) : undefined}
+              onPointerMove={moveMessageLongPress}
+              onPointerUp={clearMessageLongPress}
+              onPointerCancel={clearMessageLongPress}
+              onPointerLeave={() => { if (longPressTimer.current) clearMessageLongPress() }}
+              onClickCapture={event => {
+                if (!longPressTriggered.current) return
+                event.preventDefault()
+                event.stopPropagation()
+                longPressTriggered.current = false
+              }}
+              onContextMenu={!item.deleted && !item.recalled ? event => {
+                event.preventDefault()
+                clearMessageLongPress()
+                showMessageActions(item.id, event.currentTarget)
+              } : undefined}
+              onKeyDown={!item.deleted && !item.recalled ? event => {
+                if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                  event.preventDefault()
+                  showMessageActions(item.id, event.currentTarget)
+                }
+              } : undefined}>
               {item.quotedId && <button
                 className="quote"
                 onClick={() => {
@@ -594,34 +665,21 @@ function Chat(props: {
                   : (!stickerMessage || !item.body.startsWith('表情包：')) && <MarkdownText text={item.body} />}
               {!item.deleted && item.mediaId && <MediaAttachment app={app} assetId={item.mediaId} variant={stickerMessage ? 'sticker' : undefined} notify={notify}/>}
               {!item.deleted && item.authorKind==='agent' && !item.mediaId &&
-                <MessageSpeech app={app} message={item} version={version} notify={notify}/>}
+                <MessageAudio app={app} message={item} version={version}/>}
             </div>
-            {!item.deleted && !item.recalled && <div className="message-actions">
-              {!readOnly && <button type="button" className="message-action-quick" aria-label={`回复 ${item.authorName}`} onClick={() => {
-                setQuoted(item)
-                setMessageMenuId(null)
-                setMessageReactionId(null)
-                requestAnimationFrame(() => chatInputRef.current?.focus())
-              }}>回复</button>}
-              {!readOnly && <button type="button" className="message-action-quick message-action-react" aria-label={`给 ${item.authorName} 的消息添加表情`} aria-expanded={messageReactionId === item.id}
-                onClick={event => { event.stopPropagation(); setMessageReactionId(current => current === item.id ? null : item.id); setMessageMenuId(null) }}>表情</button>}
-              <button type="button" className="message-action-more" aria-label="更多消息操作" aria-expanded={messageMenuId === item.id}
-                onClick={event => { event.stopPropagation(); setMessageMenuId(current => current === item.id ? null : item.id); setMessageReactionId(null) }}><MoreIcon/></button>
+            {!item.deleted && !item.recalled && <>
               {!!item.reactions.length && <div className="message-reactions" aria-label="消息表情">
                 {item.reactions.map(reaction => <button type="button" key={reaction.emoji} className={reaction.actorIds.includes('local-user') ? 'mine' : ''}
                   aria-label={`${reaction.emoji} ${reaction.actorIds.length} 人，点击切换`} onClick={() => void app.react(item.id, reaction.emoji).catch(reason => notify({text:errorText(reason),tone:'error'}))}>
                   {reaction.emoji}<small>{reaction.actorIds.length}</small></button>)}
               </div>}
-              {messageReactionId === item.id && <div className="message-reaction-menu" role="group" aria-label="选择表情" onClick={event => event.stopPropagation()}>
-                <div className="message-emoji-row" aria-label="快速表情">
-                  {['❤️','👍','😂','😮','😢','🙏'].map(emoji => <button type="button" key={emoji} aria-label={`表情 ${emoji}`}
-                    onClick={() => { void app.react(item.id, emoji).catch(reason => notify({text:errorText(reason),tone:'error'})); setMessageReactionId(null) }}>{emoji}</button>)}
-                </div>
-              </div>}
-              {messageMenuId === item.id && <div className="message-action-menu" role="menu" aria-label="消息操作" onClick={event => event.stopPropagation()}>
+              {messageMenuId === item.id && <div className={`message-action-menu${messageMenuPlacement === 'above' ? ' menu-above' : ''}`} role="menu" aria-label="消息操作" onClick={event => event.stopPropagation()}>
                 {!readOnly && <button type="button" role="menuitem" onClick={() => {
                   setQuoted(item); setMessageMenuId(null); setMessageReactionId(null); requestAnimationFrame(() => chatInputRef.current?.focus())
-                }}>引用回复</button>}
+                }}>回复</button>}
+                {!readOnly && <button type="button" role="menuitem" onClick={() => {
+                  setMessageMenuId(null); setMessageReactionId(item.id)
+                }}>表情</button>}
                 {!readOnly && <button type="button" role="menuitem" onClick={() => { setEditor(item); setEditBody(item.body); setMessageMenuId(null); setMessageReactionId(null) }}>编辑消息</button>}
                 {!readOnly && mine && <button type="button" role="menuitem" onClick={async () => {
                   setMessageMenuId(null); setMessageReactionId(null)
@@ -640,7 +698,13 @@ function Chat(props: {
                   if (confirm('删除这条消息？引用和自动来源记忆将失效。')) void app.deleteMessage(item.id).catch(reason => notify({text:errorText(reason),tone:'error'}))
                 }}>删除消息</button>
               </div>}
-            </div>}
+              {messageReactionId === item.id && <div className={`message-reaction-menu${messageMenuPlacement === 'above' ? ' menu-above' : ''}`} role="group" aria-label="选择表情" onClick={event => event.stopPropagation()}>
+                <div className="message-emoji-row" aria-label="快速表情">
+                  {['❤️','👍','😂','😮','😢','🙏'].map(emoji => <button type="button" key={emoji} aria-label={`表情 ${emoji}`}
+                    onClick={() => { void app.react(item.id, emoji).catch(reason => notify({text:errorText(reason),tone:'error'})); setMessageReactionId(null) }}>{emoji}</button>)}
+                </div>
+              </div>}
+            </>}
           </div>
         </article>
       })}

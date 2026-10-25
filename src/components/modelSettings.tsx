@@ -21,7 +21,7 @@ type ProviderDetail = { draft: ConnectionDraft; tab: 'config' | 'models' }
 const tabs: { id: ModelTab; label: string; description: string }[] = [
   { id: 'text', label: '文字', description: '角色聊天与对话记忆' },
   { id: 'image', label: '图片', description: '根据描述生成图片' },
-  { id: 'speech', label: '语音', description: '朗读消息与生成语音' }
+  { id: 'speech', label: '语音', description: '生成语音并发送' }
 ]
 const contextPresets = [
   { name: '轻量', contextTokens: 16384, outputTokens: 1024, detail: '16K 上下文' },
@@ -152,7 +152,7 @@ export function ModelSettings({ app, version, notify, page: settingsPage, openPr
       <DefaultModelChoice label="文字模型" description="角色未单独指定模型时使用" models={modelsFor('text')}
         value={main?.providerId ? modelValue(main.providerId, main.modelId) : ''} change={saveDefaultText} notify={notify} />
       {(['image', 'speech'] as const).map(kind => <DefaultModelChoice key={kind} disabled={mediaBusy} label={kind === 'image' ? '图片模型' : '语音模型'}
-        description={kind === 'image' ? '根据聊天内容生成图片' : '朗读消息与生成语音'} models={modelsFor(kind)} optional
+        description={kind === 'image' ? '根据聊天内容生成图片' : '生成语音并发送'} models={modelsFor(kind)} optional
         value={media[`${kind}ProviderId`] ? modelValue(media[`${kind}ProviderId`], media[`${kind}Model`]) : ''}
         change={async value => {
           const [providerId, modelId] = value ? JSON.parse(value) as [string, string] : ['', '']
@@ -336,7 +336,7 @@ function DefaultModelChoice({ label, description, value, models, optional = fals
   const groups = [...new Map(models.map(model => [model.providerId, model.providerName])).entries()]
   return <label className="default-model-row">
     <span className="default-model-row-copy"><strong>{label}</strong><small>{description}</small></span>
-    <select aria-label={label} value={value} disabled={busy || disabled} aria-busy={busy} onChange={event => {
+    <select className="default-model-select" aria-label={label} value={value} disabled={busy || disabled} aria-busy={busy} onChange={event => {
       const next = event.target.value
       if (lock.current || next === value) return
       lock.current = true; setBusy(true)

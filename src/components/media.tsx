@@ -33,20 +33,13 @@ export function MediaAttachment({app,assetId,variant,notify}:{app:AppApi;assetId
     </div>}</>
 }
 
-export function MessageSpeech({app,message,version,notify}:{app:AppApi;message:Message;version:number;notify:Notify}) {
+export function MessageAudio({app,message,version}:{app:AppApi;message:Message;version:number}) {
   const [asset,setAsset]=useState<MediaAsset|null>(null)
-  const [busy,setBusy]=useState(false)
   useEffect(()=>{let active=true
     void app.mediaAssets({kind:'audio',messageId:message.id}).then(v=>{if(active)setAsset(v.find(a=>a.status==='ready')??null)},()=>{})
     return()=>{active=false}
   },[app,message.id,version])
-  if(asset)return <MediaAttachment app={app} assetId={asset.id}/>
-  return <><button type="button" disabled={busy} className="text-button" onClick={async()=>{
-    setBusy(true)
-    try{const s=await app.mediaSettings();const a=await app.generateAgentVoice(message.authorId,message.body,s.voice,message.conversationId,message.id)
-      if(a.status==='ready')setAsset(a);else notify({text:a.error,tone:'error'})
-    }catch(e){notify({text:errorText(e),tone:'error'})}finally{setBusy(false)}
-  }}>{busy?'正在合成…':'朗读'}</button>{busy && <button type="button" className="text-button" onClick={()=>app.cancelMedia(message.conversationId)}>取消朗读</button>}</>
+  return asset ? <MediaAttachment app={app} assetId={asset.id}/> : null
 }
 
 export function MediaSheet({app,agent,close,notify,conversationId}:{app:AppApi;agent:Actor;close:()=>void;notify:Notify;conversationId?:string}) {

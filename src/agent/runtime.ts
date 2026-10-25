@@ -684,7 +684,8 @@ export class AgentRuntime {
         await this.repository.reserveModelCall(activityId)
         try {
           const result = await this.callWithRetry(provider, binding, request, controller.signal,
-            activityId, runId, agent.id, posts === 0 && sidePosts === 0 && toolCount === 0)
+            activityId, runId, agent.id, posts === 0 && sidePosts === 0 && toolCount === 0,
+            () => posts === 0)
           if (controller.signal.aborted) throw new Error('cancelled')
           // A tool result becomes seen only after the next model request receives it.
           // Later calls in the same batch still use the previous boundary.
@@ -746,7 +747,11 @@ export class AgentRuntime {
             })
             if (outcome.openedConversationId) openedConversationId = outcome.openedConversationId
             input.push({ role: 'tool', toolCallId: call.id, name: call.name, content: outcome.content })
-            if (outcome.posted) posts++
+            if (outcome.posted) {
+              posts++
+              this.streaming.delete(agent.id)
+              this.notify()
+            }
             if (outcome.sidePosted) sidePosts++
             if (outcome.seenThrough !== undefined) {
               if (outcome.seenConversationId && outcome.seenConversationId !== conversationId) {
@@ -805,6 +810,7 @@ export class AgentRuntime {
     } finally {
       clearTimeout(deadline)
       this.controllers.delete(key)
+      if (this.streaming.get(agent.id)?.conversationId === conversationId) this.streaming.delete(agent.id)
       this.notify()
     }
   }
@@ -1033,7 +1039,8 @@ export class AgentRuntime {
   }
 
   private async callWithRetry(provider: Provider, binding: ModelBinding, request: ModelRequest,
-    signal: AbortSignal, activityId: string, runId: string, agentId: string, retryable: boolean) {
+    signal: AbortSignal, activityId: string, runId: string, agentId: string, retryable: boolean,
+    showPreview: () => boolean) {
     for (let attempt = 0; ; attempt++) {
       const startedAt = Date.now()
       let result
@@ -1041,7 +1048,7 @@ export class AgentRuntime {
         const conversationId = this.runs.get(agentId)?.conversationId ?? ''
         let lastPreview = 0
         result = await callModel(provider, binding.modelId, request, signal, text => {
-          if (signal.aborted || !conversationId) return
+          if (signal.aborted || !conversationId || !showPreview()) return
           this.streaming.set(agentId, { agentId, conversationId, text: text.slice(0, 32768) })
           if (Date.now() - lastPreview >= 80) { lastPreview = Date.now(); this.notify() }
         }, async () => {
@@ -1051,7 +1058,6 @@ export class AgentRuntime {
         })
       }
       catch (error) {
-        this.streaming.delete(agentId); this.notify()
         const transient = error instanceof ModelProtocolError && /^http_(429|500|502|503|504)$/.test(error.code)
         await this.repository.recordModelCall({ runId, agentId, providerId: provider.id,
           modelId: binding.modelId, purpose: 'main', status: signal.aborted ? 'cancelled' : 'failed', inputTokens: null,
@@ -1061,7 +1067,6 @@ export class AgentRuntime {
         await this.repository.reserveModelCall(activityId)
         continue
       }
-      this.streaming.delete(agentId); this.notify()
       await this.repository.recordModelCall({ runId, agentId, providerId: provider.id,
         modelId: binding.modelId, purpose: 'main', status: 'completed',
         inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, startedAt })
