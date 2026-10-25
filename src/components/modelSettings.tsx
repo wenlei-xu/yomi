@@ -202,7 +202,7 @@ export function ModelSettings({ app, version, notify, page: settingsPage, openPr
       <section className="model-provider-section">
         <div className="model-provider-heading"><div><h2>{label}提供商</h2>
           <p>管理连接信息与可用模型。</p></div>
-          <button className="btn-secondary" type="button" onClick={() => addConnection(kind)}><PlusIcon />添加提供商</button></div>
+          {channelsFor(kind).length > 0 && <button className="btn-secondary" type="button" onClick={() => addConnection(kind)}><PlusIcon />添加提供商</button>}</div>
         <ProviderSection kind={kind} providers={channelsFor(kind)} modelSelections={modelSelections}
           open={editConnection} add={addConnection} />
       </section>
@@ -245,7 +245,6 @@ function ProviderSection({ kind, providers, modelSelections, open, add }: {
       })}
     </div>}
     {!visible.length && <div className="model-provider-empty">
-      <span className="model-provider-empty-icon" aria-hidden="true"><PlusIcon /></span>
       <strong>{providers.length ? '没有匹配的提供商' : `还没有${label}提供商`}</strong>
       <p>{providers.length ? '换个关键词，或清除搜索后重试。' : '添加 Base URL 与 API Key，即可拉取并选择模型。'}</p>
       {!providers.length && <button className="btn-primary model-provider-add" type="button" onClick={() => add(kind)}>

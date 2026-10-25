@@ -22,7 +22,7 @@
 .background-status small { color: var(--ink-500); font-size: 9.5px; }
 .about { gap: 14px; }
 .about-hero { display: flex; align-items: center; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--ink-100); }
-.about-hero > span { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 14px; background: linear-gradient(145deg, var(--sky-100), var(--sky-50)); color: var(--skype-deep); font-size: 22px; font-weight: 700; }
+.about-hero > img { flex: none; width: 46px; height: 46px; border-radius: 12px; object-fit: contain; }
 .about-hero > div { display: grid; gap: 3px; }
 .about-hero strong { color: var(--ink-900); font-size: 18px; }
 .about-hero small { color: var(--ink-500); font-size: 10.5px; }
@@ -120,8 +120,6 @@
 .model-provider-status.off { background: var(--ink-100); color: var(--ink-500); }
 .model-provider-chevron { width: 16px; height: 16px; color: var(--ink-300); }
 .model-provider-empty { display: grid; justify-items: center; gap: 7px; padding: 25px 18px; border: 1px dashed var(--ink-200); border-radius: 14px; background: var(--paper); text-align: center; }
-.model-provider-empty-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: var(--sky-100); color: var(--skype-deep); }
-.model-provider-empty-icon svg { width: 17px; height: 17px; }
 .model-provider-empty strong { font-size: 13px; }
 .model-provider-empty p { max-width: 300px; margin: 0; color: var(--ink-500); font-size: 11px; line-height: 1.55; }
 .model-provider-empty > button { margin-top: 5px; }

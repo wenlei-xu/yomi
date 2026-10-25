@@ -1078,25 +1078,6 @@ main { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .agent-tools span { padding: 2px 5px; border-radius: 4px; background: var(--ink-100); color: var(--ink-700); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; }
 .agent-card-actions { display: flex; gap: 6px; padding-top: 7px; border-top: 1px solid var(--ink-100); }
 .agent-card-actions button { min-height: 34px; }
-.hire-agent {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 11px;
-  width: 100%;
-  margin-top: 10px;
-  padding: 17px;
-  border: 1.5px dashed var(--ink-200);
-  border-radius: 15px;
-  background: linear-gradient(135deg, var(--paper), var(--sky-50));
-  color: var(--ink-900);
-  text-align: left;
-}
-.hire-plus { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: var(--cloud); color: var(--skype-deep); box-shadow: var(--shadow); }
-.hire-plus svg { width: 19px; height: 19px; }
-.hire-agent strong, .hire-agent small { display: block; }
-.hire-agent strong { font-size: 14px; font-weight: 600; }
-.hire-agent small { margin-top: 2px; color: var(--ink-500); font-size: 11px; font-style: italic; }
 .card-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .danger-zone { display: flex; flex-wrap: wrap; gap: 5px; padding-top: 10px; border-top: 1px solid var(--ink-100); }
 .avatar-preview { display: flex; align-items: center; gap: 10px; }

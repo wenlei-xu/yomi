@@ -977,7 +977,8 @@ function Agents(props: {
           <button type="button" key={filter.id} aria-pressed={agentFilter === filter.id} onClick={() => setAgentFilter(filter.id)}>{filter.label} <b>{filter.count}</b></button>)}
       </div>
       <div className="agent-actions">
-        <button className="btn-primary" onClick={() => setEditing('new')}><PlusIcon /> 新角色</button>
+        {(agents.length > 0 || !!agentQuery || agentFilter !== 'current') &&
+          <button className="btn-primary" onClick={() => setEditing('new')}><PlusIcon /> 新角色</button>}
         <button className="btn-secondary" onClick={() => setCreatingGroup(true)} disabled={!active.length}><ChatIcon /> 建群</button>
         <label className="agent-action-file">导入<input type="file" accept=".json,.yomi-character.json" onChange={async event => {
           const file = event.target.files?.[0]
@@ -1017,11 +1018,7 @@ function Agents(props: {
         </article>)}
       </div>
       {!visible.length && <Empty text={agentQuery ? '没有找到这个角色。' : agentFilter === 'archived' ? '还没有归档角色。' : agentFilter === 'disabled' ? '没有停用的角色。' : '这里还没有角色。'}
-        action={!agentQuery && agentFilter === 'current' ? '创建第一个角色' : undefined} onAction={() => setEditing('new')} icon={<AgentsIcon />} />}
-      <button className="hire-agent" onClick={() => setEditing('new')}>
-        <span className="hire-plus"><PlusIcon /></span>
-        <span><strong>创建新角色</strong><small>设计一位新的对话伙伴</small></span>
-      </button>
+        action={!agents.length && !agentQuery && agentFilter === 'current' ? '创建第一个角色' : undefined} onAction={() => setEditing('new')} icon={<AgentsIcon />} />}
     </div>
     {editing && <AgentEditor
       key={editing === 'new' ? 'new' : editing.id}
@@ -1623,7 +1620,7 @@ function Me(props: {
     {view === 'about' && <>
     <Section>
     <div className="settings-card about">
-      <div className="about-hero"><span>Y</span><div><strong>Yomi</strong><small>本地优先的角色对话空间</small></div></div>
+      <div className="about-hero"><img src="/logo.png" alt="" /><div><strong>Yomi</strong><small>本地优先的角色对话空间</small></div></div>
       <div className="about-facts">
         <div><strong>SQLite</strong><span>聊天保存在设备</span></div>
         <div><strong>BYOM</strong><span>使用你配置的模型</span></div>
